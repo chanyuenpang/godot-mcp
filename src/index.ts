@@ -89,6 +89,7 @@ class GodotServer {
     'directory': 'directory',
     'recursive': 'recursive',
     'scene': 'scene',
+    'resource_path': 'resourcePath',
   };
 
   /**
@@ -913,6 +914,59 @@ class GodotServer {
             required: ['projectPath'],
           },
         },
+        {
+          name: 'read_resource',
+          description: 'Read properties from a Godot resource file (.tres, .res)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: {
+                type: 'string',
+                description: 'Path to the Godot project directory',
+              },
+              resourcePath: {
+                type: 'string',
+                description: 'Path to the resource file (relative to project, e.g., "data/buffs/fire_damage.tres")',
+              },
+            },
+            required: ['projectPath', 'resourcePath'],
+          },
+        },
+        {
+          name: 'edit_resource',
+          description: 'Edit properties of a Godot resource file (.tres, .res)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: {
+                type: 'string',
+                description: 'Path to the Godot project directory',
+              },
+              resourcePath: {
+                type: 'string',
+                description: 'Path to the resource file (relative to project)',
+              },
+              properties: {
+                type: 'array',
+                description: 'Array of properties to modify',
+                items: {
+                  type: 'object',
+                  properties: {
+                    key: {
+                      type: 'string',
+                      description: 'Property name to modify',
+                    },
+                    value: {
+                      description: 'New value for the property (type should match original)',
+                    },
+                  },
+                  required: ['key', 'value'],
+                },
+              },
+            },
+            required: ['projectPath', 'resourcePath', 'properties'],
+          },
+        },
       ],
     }));
 
@@ -948,6 +1002,10 @@ class GodotServer {
           return await this.handleGetUid(request.params.arguments);
         case 'update_project_uids':
           return await this.handleUpdateProjectUids(request.params.arguments);
+        case 'read_resource':
+          return await this.handleReadResource(request.params.arguments);
+        case 'edit_resource':
+          return await this.handleEditResource(request.params.arguments);
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
@@ -2138,6 +2196,203 @@ class GodotServer {
           'Ensure Godot is installed correctly',
           'Check if the GODOT_PATH environment variable is set correctly',
           'Verify the project path is accessible',
+        ]
+      );
+    }
+  }
+
+  /**
+   * Handle the read_resource tool
+   * Read properties from a Godot resource file (.tres, .res)
+   */
+  private async handleReadResource(args: any) {
+    // Normalize parameters to camelCase
+    args = this.normalizeParameters(args);
+    
+    if (!args.projectPath) {
+      return this.createErrorResponse(
+        'Project path is required',
+        ['Provide a valid path to a Godot project directory']
+      );
+    }
+
+    if (!args.resourcePath) {
+      return this.createErrorResponse(
+        'Resource path is required',
+        ['Provide the path to the resource file (relative to project)']
+      );
+    }
+
+    if (!this.validatePath(args.projectPath) || !this.validatePath(args.resourcePath)) {
+      return this.createErrorResponse(
+        'Invalid path',
+        ['Provide a valid path without ".." or other potentially unsafe characters']
+      );
+    }
+
+    try {
+      // Ensure godotPath is set
+      if (!this.godotPath) {
+        await this.detectGodotPath();
+        if (!this.godotPath) {
+          return this.createErrorResponse(
+            'Could not find a valid Godot executable path',
+            [
+              'Ensure Godot is installed correctly',
+              'Set GODOT_PATH environment variable to specify the correct path',
+            ]
+          );
+        }
+      }
+
+      // Check if the project directory exists and contains a project.godot file
+      const projectFile = join(args.projectPath, 'project.godot');
+      if (!existsSync(projectFile)) {
+        return this.createErrorResponse(
+          `Not a valid Godot project: ${args.projectPath}`,
+          [
+            'Ensure the path points to a directory containing a project.godot file',
+            'Use list_projects to find valid Godot projects',
+          ]
+        );
+      }
+
+      // Prepare parameters for the operation
+      const params = {
+        resourcePath: args.resourcePath,
+      };
+
+      // Execute the operation
+      const { stdout, stderr } = await this.executeOperation('read_resource', params, args.projectPath);
+
+      if (stderr && stderr.includes('Failed to')) {
+        return this.createErrorResponse(
+          `Failed to read resource: ${stderr}`,
+          [
+            'Check if the resource file exists',
+            'Verify the resource file is a valid Godot resource (.tres or .res)',
+          ]
+        );
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: stdout,
+          },
+        ],
+      };
+    } catch (error: any) {
+      return this.createErrorResponse(
+        `Failed to read resource: ${error?.message || 'Unknown error'}`,
+        [
+          'Ensure Godot is installed correctly',
+          'Check if the GODOT_PATH environment variable is set correctly',
+          'Verify the resource path is correct',
+        ]
+      );
+    }
+  }
+
+  /**
+   * Handle the edit_resource tool
+   * Edit properties of a Godot resource file (.tres, .res)
+   */
+  private async handleEditResource(args: any) {
+    // Normalize parameters to camelCase
+    args = this.normalizeParameters(args);
+    
+    if (!args.projectPath) {
+      return this.createErrorResponse(
+        'Project path is required',
+        ['Provide a valid path to a Godot project directory']
+      );
+    }
+
+    if (!args.resourcePath) {
+      return this.createErrorResponse(
+        'Resource path is required',
+        ['Provide the path to the resource file (relative to project)']
+      );
+    }
+
+    if (!args.properties || !Array.isArray(args.properties)) {
+      return this.createErrorResponse(
+        'Properties array is required',
+        ['Provide an array of properties to modify, each with "key" and "value"']
+      );
+    }
+
+    if (!this.validatePath(args.projectPath) || !this.validatePath(args.resourcePath)) {
+      return this.createErrorResponse(
+        'Invalid path',
+        ['Provide a valid path without ".." or other potentially unsafe characters']
+      );
+    }
+
+    try {
+      // Ensure godotPath is set
+      if (!this.godotPath) {
+        await this.detectGodotPath();
+        if (!this.godotPath) {
+          return this.createErrorResponse(
+            'Could not find a valid Godot executable path',
+            [
+              'Ensure Godot is installed correctly',
+              'Set GODOT_PATH environment variable to specify the correct path',
+            ]
+          );
+        }
+      }
+
+      // Check if the project directory exists and contains a project.godot file
+      const projectFile = join(args.projectPath, 'project.godot');
+      if (!existsSync(projectFile)) {
+        return this.createErrorResponse(
+          `Not a valid Godot project: ${args.projectPath}`,
+          [
+            'Ensure the path points to a directory containing a project.godot file',
+            'Use list_projects to find valid Godot projects',
+          ]
+        );
+      }
+
+      // Prepare parameters for the operation
+      const params = {
+        resourcePath: args.resourcePath,
+        properties: args.properties,
+      };
+
+      // Execute the operation
+      const { stdout, stderr } = await this.executeOperation('edit_resource', params, args.projectPath);
+
+      if (stderr && stderr.includes('Failed to')) {
+        return this.createErrorResponse(
+          `Failed to edit resource: ${stderr}`,
+          [
+            'Check if the resource file exists',
+            'Verify the property names are correct',
+            'Ensure the values match the expected types',
+          ]
+        );
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: stdout,
+          },
+        ],
+      };
+    } catch (error: any) {
+      return this.createErrorResponse(
+        `Failed to edit resource: ${error?.message || 'Unknown error'}`,
+        [
+          'Ensure Godot is installed correctly',
+          'Check if the GODOT_PATH environment variable is set correctly',
+          'Verify the resource path is correct',
         ]
       );
     }

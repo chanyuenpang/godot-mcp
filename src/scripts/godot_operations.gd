@@ -71,6 +71,10 @@ func _init():
             get_uid(params)
         "resave_resources":
             resave_resources(params)
+        "read_resource":
+            read_resource(params)
+        "edit_resource":
+            edit_resource(params)
         _:
             log_error("Unknown operation: " + operation)
             quit(1)
@@ -1195,3 +1199,538 @@ func save_scene(params):
             printerr("Failed to save scene: " + str(error))
     else:
         printerr("Failed to pack scene: " + str(result))
+
+# ============================================================================
+# Resource Operations - 资源文件读取与编辑
+# ============================================================================
+
+# 内置属性列表（跳过这些属性）
+const BUILTIN_PROPERTIES = [
+    "resource_local_to_scene",
+    "resource_path", 
+    "resource_name",
+    "script",
+    "Resource"
+]
+
+# 读取资源文件属性（直接解析文本，绕过脚本依赖）
+func read_resource(params):
+    var resource_path = params.resource_path
+    
+    # 添加 res:// 前缀（如果需要）
+    if not resource_path.begins_with("res://"):
+        resource_path = "res://" + resource_path
+    
+    log_info("Reading resource: " + resource_path)
+    
+    # 检查文件是否存在
+    if not FileAccess.file_exists(resource_path):
+        log_error("Resource file does not exist: " + resource_path)
+        var absolute_path = ProjectSettings.globalize_path(resource_path)
+        log_error("Absolute path: " + absolute_path)
+        print(JSON.stringify({
+            "success": false,
+            "error": "File not found",
+            "resource_path": resource_path
+        }))
+        quit(1)
+        return
+    
+    # 获取绝对路径
+    var absolute_path = ProjectSettings.globalize_path(resource_path)
+    
+    # 直接读取文件内容
+    var file = FileAccess.open(resource_path, FileAccess.READ)
+    if file == null:
+        var err = FileAccess.get_open_error()
+        log_error("Failed to open file: " + str(err))
+        print(JSON.stringify({
+            "success": false,
+            "error": "Failed to open file: " + str(err),
+            "resource_path": resource_path
+        }))
+        quit(1)
+        return
+    
+    var content = file.get_as_text()
+    file.close()
+    
+    log_debug("File content length: " + str(content.length()))
+    
+    # 解析资源信息
+    var resource_info = _parse_tres_content(content)
+    resource_info["success"] = true
+    resource_info["resource_path"] = resource_path
+    resource_info["absolute_path"] = absolute_path
+    
+    print(JSON.stringify(resource_info))
+    log_info("Resource read successfully, found " + str(resource_info.properties.size()) + " properties")
+
+# 解析 .tres/.tscn 文件内容
+func _parse_tres_content(content: String) -> Dictionary:
+    var result = {
+        "resource_type": "",
+        "script_class": "",
+        "uid": "",
+        "properties": [],
+        "raw_content": ""
+    }
+    
+    var lines = content.split("\n")
+    var in_resource_section = false
+    var resource_header_found = false
+    
+    for line in lines:
+        line = line.strip_edges()
+        
+        # 解析头部信息 [gd_resource type="..." script_class="..." ...]
+        if line.begins_with("[gd_resource") or line.begins_with("[gd_scene"):
+            result.resource_type = _extract_attribute(line, "type")
+            result.script_class = _extract_attribute(line, "script_class")
+            result.uid = _extract_attribute(line, "uid")
+            continue
+        
+        # 检测 [resource] 段落开始
+        if line == "[resource]":
+            in_resource_section = true
+            resource_header_found = true
+            continue
+        
+        # 检测其他段落开始（结束资源段落）
+        if line.begins_with("[") and line != "[resource]":
+            in_resource_section = false
+            continue
+        
+        # 解析资源段落中的属性
+        if in_resource_section and not line.is_empty() and not line.begins_with("#"):
+            var prop = _parse_property_line(line)
+            if prop != null:
+                # 跳过内置属性
+                if prop.name in BUILTIN_PROPERTIES:
+                    continue
+                result.properties.append(prop)
+    
+    result["raw_content"] = content
+    
+    if not resource_header_found:
+        result["resource_type"] = "Unknown"
+    
+    return result
+
+# 从行中提取属性值
+func _extract_attribute(line: String, attr_name: String) -> String:
+    var pattern = attr_name + '="'
+    var start = line.find(pattern)
+    if start == -1:
+        return ""
+    start += pattern.length()
+    var end = line.find('"', start)
+    if end == -1:
+        return ""
+    return line.substr(start, end - start)
+
+# 解析属性行
+func _parse_property_line(line: String) -> Dictionary:
+    # 格式: property_name = value
+    # 或: property_name = ExtResource("id")
+    # 或: property_name = SubResource("type", "id")
+    
+    var eq_pos = line.find(" = ")
+    if eq_pos == -1:
+        eq_pos = line.find("=")
+        if eq_pos == -1:
+            return {}
+    
+    var prop_name = line.substr(0, eq_pos).strip_edges()
+    var prop_value_str = line.substr(eq_pos + 1).strip_edges()
+    
+    if prop_name.is_empty():
+        return {}
+    
+    # 解析值
+    var parsed_value = _parse_value_string(prop_value_str)
+    
+    return {
+        "name": prop_name,
+        "raw_value": prop_value_str,
+        "value": parsed_value["value"],
+        "value_type": parsed_value["type"]
+    }
+
+# 解析值字符串
+func _parse_value_string(value_str: String) -> Dictionary:
+    var result = {"value": null, "type": "nil"}
+    
+    if value_str.is_empty():
+        return result
+    
+    # ExtResource 或 SubResource 引用
+    if value_str.begins_with("ExtResource(") or value_str.begins_with("SubResource("):
+        result["type"] = "reference"
+        result["value"] = value_str
+        return result
+    
+    # 布尔值
+    if value_str == "true":
+        result["type"] = "bool"
+        result["value"] = true
+        return result
+    if value_str == "false":
+        result["type"] = "bool"
+        result["value"] = false
+        return result
+    
+    # 字符串（带引号）
+    if value_str.begins_with('"') and value_str.ends_with('"'):
+        result["type"] = "String"
+        result["value"] = value_str.substr(1, value_str.length() - 2)
+        return result
+    
+    # 数字
+    if value_str.is_valid_float():
+        if value_str.contains(".") or value_str.to_lower().contains("e"):
+            result["type"] = "float"
+            result["value"] = value_str.to_float()
+        else:
+            result["type"] = "int"
+            result["value"] = value_str.to_int()
+        return result
+    
+    # Vector2
+    if value_str.begins_with("Vector2("):
+        var coords = _parse_vector_coords(value_str, "Vector2(")
+        if coords.size() == 2:
+            result["type"] = "Vector2"
+            result["value"] = {"x": coords[0], "y": coords[1]}
+        return result
+    
+    # Vector2i
+    if value_str.begins_with("Vector2i("):
+        var coords = _parse_vector_coords(value_str, "Vector2i(")
+        if coords.size() == 2:
+            result["type"] = "Vector2i"
+            result["value"] = {"x": coords[0], "y": coords[1]}
+        return result
+    
+    # Array
+    if value_str.begins_with("Array[") or value_str.begins_with("["):
+        result["type"] = "Array"
+        result["value"] = value_str
+        return result
+    
+    # Dictionary
+    if value_str.begins_with("{"):
+        result["type"] = "Dictionary"
+        result["value"] = value_str
+        return result
+    
+    # 其他类型，保留原始字符串
+    result["type"] = "unknown"
+    result["value"] = value_str
+    return result
+
+# 解析向量坐标
+func _parse_vector_coords(value_str: String, prefix: String) -> Array:
+    var start = prefix.length()
+    var end = value_str.find(")", start)
+    if end == -1:
+        return []
+    var coords_str = value_str.substr(start, end - start)
+    var parts = coords_str.split(",")
+    var result = []
+    for part in parts:
+        result.append(part.strip_edges().to_float())
+    return result
+
+# 编辑资源文件属性（直接修改文本）
+func edit_resource(params):
+    var resource_path = params.resource_path
+    var properties = params.properties  # Array of {key, value}
+    
+    # 添加 res:// 前缀（如果需要）
+    if not resource_path.begins_with("res://"):
+        resource_path = "res://" + resource_path
+    
+    log_info("Editing resource: " + resource_path)
+    log_debug("Properties to modify: " + str(properties))
+    
+    # 检查文件是否存在
+    if not FileAccess.file_exists(resource_path):
+        log_error("Resource file does not exist: " + resource_path)
+        print(JSON.stringify({
+            "success": false,
+            "error": "File not found",
+            "resource_path": resource_path,
+            "modified": [],
+            "errors": ["File not found"]
+        }))
+        quit(1)
+        return
+    
+    # 读取文件内容
+    var file = FileAccess.open(resource_path, FileAccess.READ)
+    if file == null:
+        var err = FileAccess.get_open_error()
+        log_error("Failed to open file: " + str(err))
+        print(JSON.stringify({
+            "success": false,
+            "error": "Failed to open file: " + str(err),
+            "resource_path": resource_path,
+            "modified": [],
+            "errors": ["Failed to open file"]
+        }))
+        quit(1)
+        return
+    
+    var content = file.get_as_text()
+    file.close()
+    
+    # 修改属性
+    var modified = []
+    var errors = []
+    var lines = content.split("\n")
+    var new_lines = []
+    var in_resource_section = false
+    
+    # 构建属性映射
+    var prop_map = {}
+    for prop in properties:
+        prop_map[prop.key] = prop.value
+    
+    for line in lines:
+        var stripped = line.strip_edges()
+        
+        # 检测段落
+        if stripped == "[resource]":
+            in_resource_section = true
+            new_lines.append(line)
+            continue
+        
+        if stripped.begins_with("[") and stripped != "[resource]":
+            in_resource_section = false
+            new_lines.append(line)
+            continue
+        
+        # 在资源段落中处理属性
+        if in_resource_section and not stripped.is_empty():
+            var eq_pos = stripped.find(" = ")
+            if eq_pos == -1:
+                eq_pos = stripped.find("=")
+            
+            if eq_pos != -1:
+                var prop_name = stripped.substr(0, eq_pos).strip_edges()
+                
+                # 跳过内置属性
+                if prop_name in BUILTIN_PROPERTIES:
+                    new_lines.append(line)
+                    continue
+                
+                # 检查是否需要修改
+                if prop_map.has(prop_name):
+                    var new_value = prop_map[prop_name]
+                    var old_line = line
+                    var indent = _get_line_indent(line)
+                    var new_value_str = _value_to_string(new_value)
+                    line = indent + prop_name + " = " + new_value_str
+                    
+                    modified.append({
+                        "key": prop_name,
+                        "old_value": _parse_property_line(stripped).get("value", null),
+                        "new_value": new_value
+                    })
+                    log_debug("Modified: " + prop_name + " = " + new_value_str)
+        
+        new_lines.append(line)
+    
+    # 检查未找到的属性
+    for prop in properties:
+        var found = false
+        for m in modified:
+            if m.key == prop.key:
+                found = true
+                break
+        if not found:
+            errors.append("Property not found: " + prop.key)
+            log_error("Property not found: " + prop.key)
+    
+    # 保存文件
+    var save_file = FileAccess.open(resource_path, FileAccess.WRITE)
+    if save_file == null:
+        var err = FileAccess.get_open_error()
+        log_error("Failed to open file for writing: " + str(err))
+        print(JSON.stringify({
+            "success": false,
+            "error": "Failed to write file: " + str(err),
+            "resource_path": resource_path,
+            "modified": modified,
+            "errors": errors
+        }))
+        quit(1)
+        return
+    
+    save_file.store_string("\n".join(new_lines))
+    save_file.close()
+    
+    log_info("Resource saved successfully: " + resource_path)
+    print(JSON.stringify({
+        "success": true,
+        "resource_path": resource_path,
+        "modified": modified,
+        "errors": errors
+    }))
+
+# 获取行缩进
+func _get_line_indent(line: String) -> String:
+    var result = ""
+    for c in line:
+        if c == " " or c == "\t":
+            result += c
+        else:
+            break
+    return result
+
+# 将值转换为字符串表示
+func _value_to_string(value) -> String:
+    if value == null:
+        return "null"
+    
+    match typeof(value):
+        TYPE_BOOL:
+            return "true" if value else "false"
+        TYPE_STRING:
+            return '"' + value + '"'
+        TYPE_INT, TYPE_FLOAT:
+            return str(value)
+        TYPE_DICTIONARY:
+            # 处理 Vector2 格式
+            if value.has("x") and value.has("y"):
+                if value.has("z"):
+                    return "Vector3(" + str(value.x) + ", " + str(value.y) + ", " + str(value.z) + ")"
+                else:
+                    return "Vector2(" + str(value.x) + ", " + str(value.y) + ")"
+            return JSON.stringify(value)
+        TYPE_ARRAY:
+            return JSON.stringify(value)
+        _:
+            return str(value)
+
+# 保留原有的序列化函数供其他地方使用
+func _serialize_value(value):
+    if value == null:
+        return null
+    
+    match typeof(value):
+        TYPE_NIL:
+            return null
+        TYPE_BOOL:
+            return value
+        TYPE_INT:
+            return value
+        TYPE_FLOAT:
+            return value
+        TYPE_STRING:
+            return value
+        TYPE_VECTOR2:
+            return {"_type": "Vector2", "x": value.x, "y": value.y}
+        TYPE_VECTOR2I:
+            return {"_type": "Vector2i", "x": value.x, "y": value.y}
+        TYPE_VECTOR3:
+            return {"_type": "Vector3", "x": value.x, "y": value.y, "z": value.z}
+        TYPE_VECTOR3I:
+            return {"_type": "Vector3i", "x": value.x, "y": value.y, "z": value.z}
+        TYPE_VECTOR4:
+            return {"_type": "Vector4", "x": value.x, "y": value.y, "z": value.z, "w": value.w}
+        TYPE_COLOR:
+            return {"_type": "Color", "r": value.r, "g": value.g, "b": value.b, "a": value.a}
+        TYPE_RECT2:
+            return {"_type": "Rect2", "x": value.position.x, "y": value.position.y, "w": value.size.x, "h": value.size.y}
+        TYPE_ARRAY:
+            var arr = []
+            for item in value:
+                arr.append(_serialize_value(item))
+            return arr
+        TYPE_DICTIONARY:
+            var dict = {}
+            for key in value:
+                dict[key] = _serialize_value(value[key])
+            return dict
+        TYPE_OBJECT:
+            if value is Resource:
+                return {"_type": "Resource", "path": value.resource_path, "class": value.get_class()}
+            return {"_type": "Object", "class": value.get_class()}
+        _:
+            return str(value)
+
+# 反序列化值（将 JSON 值转换为 Godot 类型）
+func _deserialize_value(value, original_value, target_type):
+    if value == null:
+        return null
+    
+    # 如果是字典且包含类型信息
+    if typeof(value) == TYPE_DICTIONARY and value.has("_type"):
+        var type_name = value._type
+        
+        match type_name:
+            "Vector2":
+                return Vector2(value.x, value.y)
+            "Vector2i":
+                return Vector2i(value.x, value.y)
+            "Vector3":
+                return Vector3(value.x, value.y, value.z)
+            "Vector3i":
+                return Vector3i(value.x, value.y, value.z)
+            "Vector4":
+                return Vector4(value.x, value.y, value.z, value.w)
+            "Color":
+                return Color(value.r, value.g, value.b, value.a)
+            "Rect2":
+                return Rect2(value.x, value.y, value.w, value.h)
+            "Resource":
+                # 加载资源引用
+                if value.has("path") and value.path != "":
+                    return load(value.path)
+                return null
+    
+    # 根据目标类型转换
+    match target_type:
+        TYPE_BOOL:
+            if typeof(value) == TYPE_BOOL:
+                return value
+            elif typeof(value) == TYPE_STRING:
+                return value.to_lower() == "true"
+            elif typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+                return value != 0
+            return bool(value)
+        TYPE_INT:
+            return int(value)
+        TYPE_FLOAT:
+            return float(value)
+        TYPE_STRING:
+            return str(value)
+        TYPE_VECTOR2:
+            if typeof(value) == TYPE_DICTIONARY:
+                return Vector2(value.get("x", 0), value.get("y", 0))
+            return Vector2.ZERO
+        TYPE_VECTOR2I:
+            if typeof(value) == TYPE_DICTIONARY:
+                return Vector2i(value.get("x", 0), value.get("y", 0))
+            return Vector2i.ZERO
+        TYPE_VECTOR3:
+            if typeof(value) == TYPE_DICTIONARY:
+                return Vector3(value.get("x", 0), value.get("y", 0), value.get("z", 0))
+            return Vector3.ZERO
+        TYPE_COLOR:
+            if typeof(value) == TYPE_DICTIONARY:
+                return Color(value.get("r", 1), value.get("g", 1), value.get("b", 1), value.get("a", 1))
+            return Color.WHITE
+        TYPE_ARRAY:
+            if typeof(value) == TYPE_ARRAY:
+                return value
+            return []
+        TYPE_DICTIONARY:
+            if typeof(value) == TYPE_DICTIONARY:
+                return value
+            return {}
+        _:
+            # 默认返回原值
+            return value
