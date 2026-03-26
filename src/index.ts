@@ -33,12 +33,38 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
+ * Interface representing a single log entry with timestamp
+ */
+interface LogEntry {
+  text: string;
+  timestamp: number; // Unix timestamp in milliseconds
+}
+
+/**
+ * Interface representing a merged log entry with occurrence statistics
+ */
+interface MergedLogEntry {
+  text: string;
+  count: number;
+  timestamps: {
+    first: number;
+    last: number;
+    intermediate: number[]; // Up to 3 intermediate timestamps
+  };
+  relativeTime: {
+    first: number; // ms since process start
+    last: number;
+  };
+}
+
+/**
  * Interface representing a running Godot process
  */
 interface GodotProcess {
   process: any;
-  output: string[];
-  errors: string[];
+  output: LogEntry[];
+  errors: LogEntry[];
+  startTime: number; // Process start time
 }
 
 /**
@@ -90,6 +116,9 @@ class GodotServer {
     'recursive': 'recursive',
     'scene': 'scene',
     'resource_path': 'resourcePath',
+    'filter': 'filter',
+    'merge_duplicates': 'mergeDuplicates',
+    'max_lines': 'maxLines',
   };
 
   /**
@@ -692,11 +721,24 @@ class GodotServer {
         },
         {
           name: 'get_debug_output',
-          description: 'Get the current debug output and errors',
+          description: 'Get the current debug output and errors with filtering and deduplication support. REQUIRED: Provide a filter parameter to avoid retrieving excessive logs.',
           inputSchema: {
             type: 'object',
-            properties: {},
-            required: [],
+            properties: {
+              filter: {
+                type: 'string',
+                description: 'REQUIRED: Filter pattern to match log entries (e.g., "error", "warning", "player", specific function name). Use "*" only if you really need all logs.',
+              },
+              mergeDuplicates: {
+                type: 'boolean',
+                description: 'Whether to merge duplicate log entries and show occurrence count with timestamps (default: true)',
+              },
+              maxLines: {
+                type: 'number',
+                description: 'Maximum number of unique log entries to return (default: 50)',
+              },
+            },
+            required: ['filter'],
           },
         },
         {
@@ -979,7 +1021,7 @@ class GodotServer {
         case 'run_project':
           return await this.handleRunProject(request.params.arguments);
         case 'get_debug_output':
-          return await this.handleGetDebugOutput();
+          return await this.handleGetDebugOutput(request.params.arguments);
         case 'stop_project':
           return await this.handleStopProject();
         case 'get_godot_version':
@@ -1143,22 +1185,28 @@ class GodotServer {
 
       this.logDebug(`Running Godot project: ${args.projectPath}`);
       const process = spawn(this.godotPath!, cmdArgs, { stdio: 'pipe' });
-      const output: string[] = [];
-      const errors: string[] = [];
+      const output: LogEntry[] = [];
+      const errors: LogEntry[] = [];
 
       process.stdout?.on('data', (data: Buffer) => {
         const lines = data.toString().split('\n');
-        output.push(...lines);
+        const now = Date.now();
         lines.forEach((line: string) => {
-          if (line.trim()) this.logDebug(`[Godot stdout] ${line}`);
+          if (line.trim()) {
+            output.push({ text: line, timestamp: now });
+            this.logDebug(`[Godot stdout] ${line}`);
+          }
         });
       });
 
       process.stderr?.on('data', (data: Buffer) => {
         const lines = data.toString().split('\n');
-        errors.push(...lines);
+        const now = Date.now();
         lines.forEach((line: string) => {
-          if (line.trim()) this.logDebug(`[Godot stderr] ${line}`);
+          if (line.trim()) {
+            errors.push({ text: line, timestamp: now });
+            this.logDebug(`[Godot stderr] ${line}`);
+          }
         });
       });
 
@@ -1176,7 +1224,7 @@ class GodotServer {
         }
       });
 
-      this.activeProcess = { process, output, errors };
+      this.activeProcess = { process, output, errors, startTime: Date.now() };
 
       return {
         content: [
@@ -1200,9 +1248,12 @@ class GodotServer {
   }
 
   /**
-   * Handle the get_debug_output tool
+   * Handle the get_debug_output tool with filtering and deduplication
    */
-  private async handleGetDebugOutput() {
+  private async handleGetDebugOutput(args: any) {
+    // Normalize parameters
+    args = this.normalizeParameters(args);
+    
     if (!this.activeProcess) {
       return this.createErrorResponse(
         'No active Godot process.',
@@ -1213,14 +1264,53 @@ class GodotServer {
       );
     }
 
+    // filter is REQUIRED
+    const filter = args.filter;
+    if (!filter) {
+      return this.createErrorResponse(
+        'filter parameter is REQUIRED to avoid retrieving excessive logs.',
+        [
+          'Provide a filter pattern (e.g., "error", "warning", "player", specific function name)',
+          'Use "*" only if you really need all logs (not recommended)',
+          'Example: { "filter": "damage" } to find damage-related logs',
+        ]
+      );
+    }
+
+    const mergeDuplicates = args.mergeDuplicates !== false; // default true
+    const maxLines = args.maxLines || 50;
+
+    // Filter logs
+    const filteredOutput = this.filterLogs(this.activeProcess.output, filter);
+    const filteredErrors = this.filterLogs(this.activeProcess.errors, filter);
+
+    // Process logs
+    const processedOutput = mergeDuplicates 
+      ? this.mergeDuplicateLogs(filteredOutput)
+      : this.truncateLogs(filteredOutput, maxLines);
+    
+    const processedErrors = mergeDuplicates
+      ? this.mergeDuplicateLogs(filteredErrors)
+      : this.truncateLogs(filteredErrors, maxLines);
+
     return {
       content: [
         {
           type: 'text',
           text: JSON.stringify(
             {
-              output: this.activeProcess.output,
-              errors: this.activeProcess.errors,
+              filter: filter,
+              summary: {
+                totalOutputEntries: this.activeProcess.output.length,
+                totalErrorEntries: this.activeProcess.errors.length,
+                filteredOutputCount: filteredOutput.length,
+                filteredErrorCount: filteredErrors.length,
+                uniqueOutputCount: processedOutput.length,
+                uniqueErrorCount: processedErrors.length,
+                processRunningTime: Date.now() - this.activeProcess.startTime,
+              },
+              output: processedOutput.slice(0, maxLines),
+              errors: processedErrors.slice(0, maxLines),
             },
             null,
             2
@@ -1228,6 +1318,69 @@ class GodotServer {
         },
       ],
     };
+  }
+
+  /**
+   * Filter logs by pattern
+   */
+  private filterLogs(logs: LogEntry[], pattern: string): LogEntry[] {
+    if (pattern === '*') {
+      return logs;
+    }
+    const lowerPattern = pattern.toLowerCase();
+    return logs.filter(entry => 
+      entry.text.toLowerCase().includes(lowerPattern)
+    );
+  }
+
+  /**
+   * Merge duplicate log entries with occurrence count and timestamps
+   */
+  private mergeDuplicateLogs(logs: LogEntry[]): MergedLogEntry[] {
+    const grouped = new Map<string, LogEntry[]>();
+    
+    for (const entry of logs) {
+      const normalizedText = entry.text.trim();
+      if (!grouped.has(normalizedText)) {
+        grouped.set(normalizedText, []);
+      }
+      grouped.get(normalizedText)!.push(entry);
+    }
+
+    const merged: MergedLogEntry[] = [];
+    
+    for (const [text, entries] of grouped) {
+      const timestamps = entries.map(e => e.timestamp);
+      merged.push({
+        text: text,
+        count: entries.length,
+        timestamps: {
+          first: timestamps[0],
+          last: timestamps[timestamps.length - 1],
+          // Include up to 3 intermediate timestamps for context
+          intermediate: timestamps.length > 2 
+            ? timestamps.slice(1, -1).slice(0, 3) 
+            : [],
+        },
+        // Relative time since process start
+        relativeTime: {
+          first: timestamps[0] - this.activeProcess!.startTime,
+          last: timestamps[timestamps.length - 1] - this.activeProcess!.startTime,
+        },
+      });
+    }
+
+    // Sort by first occurrence time
+    merged.sort((a, b) => a.timestamps.first - b.timestamps.first);
+    
+    return merged;
+  }
+
+  /**
+   * Truncate logs without merging (for when mergeDuplicates is false)
+   */
+  private truncateLogs(logs: LogEntry[], maxLines: number): LogEntry[] {
+    return logs.slice(-maxLines);
   }
 
   /**
