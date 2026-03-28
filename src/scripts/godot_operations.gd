@@ -1214,14 +1214,18 @@ const BUILTIN_PROPERTIES = [
 ]
 
 # 读取资源文件属性（直接解析文本，绕过脚本依赖）
+# 支持路径参数：path = "metadata.author" 或 "items[0].name"
 func read_resource(params):
     var resource_path = params.resource_path
+    var path = params.path if params.has("path") else ""
     
     # 添加 res:// 前缀（如果需要）
     if not resource_path.begins_with("res://"):
         resource_path = "res://" + resource_path
     
     log_info("Reading resource: " + resource_path)
+    if not path.is_empty():
+        log_debug("Path filter: " + path)
     
     # 检查文件是否存在
     if not FileAccess.file_exists(resource_path):
@@ -1259,12 +1263,123 @@ func read_resource(params):
     
     # 解析资源信息
     var resource_info = _parse_tres_content(content)
+    
+    # 如果指定了路径，只返回该路径的值
+    if not path.is_empty():
+        var value_result = _get_value_by_path(resource_info, path)
+        if value_result.has("error"):
+            print(JSON.stringify({
+                "success": false,
+                "error": value_result.error,
+                "path": path,
+                "resource_path": resource_path
+            }))
+            quit(1)
+            return
+        
+        print(JSON.stringify({
+            "success": true,
+            "path": path,
+            "value": value_result.value,
+            "value_type": value_result.value_type,
+            "resource_path": resource_path
+        }))
+        log_info("Read path '" + path + "' successfully")
+        return
+    
+    # 无路径时返回完整信息（不包含 raw_content 以节省空间）
+    resource_info.erase("raw_content")
     resource_info["success"] = true
     resource_info["resource_path"] = resource_path
     resource_info["absolute_path"] = absolute_path
     
     print(JSON.stringify(resource_info))
     log_info("Resource read successfully, found " + str(resource_info.properties.size()) + " properties")
+
+# 根据路径获取值（支持嵌套对象和数组索引）
+# 路径格式: "metadata.author", "items[0]", "items[0].name"
+func _get_value_by_path(data: Dictionary, path: String) -> Dictionary:
+    var parts = _parse_json_path(path)
+    if parts.is_empty():
+        return {"error": "Invalid path: " + path, "value": null, "value_type": "error"}
+    
+    var current: Variant = data
+    var current_path = ""
+    
+    for part in parts:
+        current_path += ("." if not current_path.is_empty() else "") + part.key
+        if part.is_index:
+            # 数组索引访问
+            if typeof(current) != TYPE_ARRAY:
+                return {"error": "Path '" + current_path + "' is not an array", "value": null, "value_type": "error"}
+            if part.index < 0 or part.index >= current.size():
+                return {"error": "Index " + str(part.index) + " out of bounds at '" + current_path + "'", "value": null, "value_type": "error"}
+            current = current[part.index]
+        else:
+            # 对象属性访问
+            if typeof(current) == TYPE_DICTIONARY:
+                if part.key == "properties" and current.has("properties"):
+                    current = current["properties"]
+                elif current.has(part.key):
+                    current = current[part.key]
+                else:
+                    return {"error": "Property '" + part.key + "' not found at path '" + current_path + "'", "value": null, "value_type": "error"}
+            else:
+                return {"error": "Cannot access '" + part.key + "' on non-object at path '" + current_path + "'", "value": null, "value_type": "error"}
+    
+    return {"value": current, "value_type": _get_value_type_name(current)}
+
+# 解析 JSON 路径为部件数组
+func _parse_json_path(path: String) -> Array:
+    var result = []
+    var i = 0
+    var current_key = ""
+    
+    while i < path.length():
+        var c = path[i]
+        
+        if c == ".":
+            if not current_key.is_empty():
+                result.append({"key": current_key, "is_index": false, "index": -1})
+                current_key = ""
+            i += 1
+        elif c == "[":
+            if not current_key.is_empty():
+                result.append({"key": current_key, "is_index": false, "index": -1})
+                current_key = ""
+            # 解析索引
+            var index_str = ""
+            i += 1
+            while i < path.length() and path[i] != "]":
+                index_str += path[i]
+                i += 1
+            if i >= path.length():
+                return []  # 未闭合的括号
+            var index = index_str.to_int()
+            if index < 0:
+                return []  # 无效索引
+            result.append({"key": "[" + index_str + "]", "is_index": true, "index": index})
+            i += 1
+        else:
+            current_key += c
+            i += 1
+    
+    if not current_key.is_empty():
+        result.append({"key": current_key, "is_index": false, "index": -1})
+    
+    return result
+
+# 获取值的类型名称
+func _get_value_type_name(value: Variant) -> String:
+    match typeof(value):
+        TYPE_NIL: return "null"
+        TYPE_BOOL: return "bool"
+        TYPE_INT: return "int"
+        TYPE_FLOAT: return "float"
+        TYPE_STRING: return "String"
+        TYPE_ARRAY: return "Array"
+        TYPE_DICTIONARY: return "Dictionary"
+        _: return "unknown"
 
 # 解析 .tres/.tscn 文件内容
 func _parse_tres_content(content: String) -> Dictionary:
@@ -1443,9 +1558,11 @@ func _parse_vector_coords(value_str: String, prefix: String) -> Array:
     return result
 
 # 编辑资源文件属性（直接修改文本）
+# 支持路径操作: path = "metadata.author" 或 "items[0]"
+# 支持操作类型: operation = "set" (默认), "delete", "append"
 func edit_resource(params):
     var resource_path = params.resource_path
-    var properties = params.properties  # Array of {key, value}
+    var properties = params.properties  # Array of {key, value, path, operation}
     
     # 添加 res:// 前缀（如果需要）
     if not resource_path.begins_with("res://"):
@@ -1492,10 +1609,36 @@ func edit_resource(params):
     var new_lines = []
     var in_resource_section = false
     
-    # 构建属性映射
-    var prop_map = {}
+    # 构建属性映射（兼容新旧格式）
+    var prop_map = {}  # key -> {value, path, operation}
     for prop in properties:
-        prop_map[prop.key] = prop.value
+        var key = prop.key if prop.has("key") else ""
+        var path = prop.path if prop.has("path") else ""
+        var operation = prop.operation if prop.has("operation") else "set"
+        var value = prop.value if prop.has("value") else null
+        
+        # 如果有 path，提取顶层属性名
+        var top_key = key
+        if path != "" and key == "":
+            var dot_pos = path.find(".")
+            var bracket_pos = path.find("[")
+            if dot_pos == -1 and bracket_pos == -1:
+                top_key = path
+            elif dot_pos == -1:
+                top_key = path.substr(0, bracket_pos)
+            elif bracket_pos == -1:
+                top_key = path.substr(0, dot_pos)
+            else:
+                top_key = path.substr(0, mini(dot_pos, bracket_pos))
+        
+        if top_key != "":
+            prop_map[top_key] = {
+                "value": value,
+                "path": path,
+                "operation": operation,
+                "original_key": key,
+                "full_path": path if path != "" else key
+            }
     
     for line in lines:
         var stripped = line.strip_edges()
@@ -1527,31 +1670,87 @@ func edit_resource(params):
                 
                 # 检查是否需要修改
                 if prop_map.has(prop_name):
-                    var new_value = prop_map[prop_name]
+                    var prop_info = prop_map[prop_name]
                     var old_line = line
                     var indent = _get_line_indent(line)
-                    var new_value_str = _value_to_string(new_value)
-                    line = indent + prop_name + " = " + new_value_str
                     
-                    modified.append({
-                        "key": prop_name,
-                        "old_value": _parse_property_line(stripped).get("value", null),
-                        "new_value": new_value
-                    })
-                    log_debug("Modified: " + prop_name + " = " + new_value_str)
+                    # 解析旧值
+                    var old_parsed = _parse_property_line(stripped)
+                    var old_value = old_parsed.get("value", null)
+                    var old_raw = old_parsed.get("raw_value", "")
+                    
+                    # 判断是简单修改还是路径修改
+                    if prop_info.path == "" or prop_info.path == prop_name:
+                        # 简单修改：直接替换整个属性值
+                        if prop_info.operation == "delete":
+                            # 删除属性行：不添加这行
+                            modified.append({
+                                "key": prop_name,
+                                "old_value": old_value,
+                                "new_value": null,
+                                "operation": "delete"
+                            })
+                            log_debug("Deleted: " + prop_name)
+                            continue  # 跳过这行
+                        else:
+                            var new_value_str = _value_to_string(prop_info.value)
+                            line = indent + prop_name + " = " + new_value_str
+                            modified.append({
+                                "key": prop_name,
+                                "old_value": old_value,
+                                "new_value": prop_info.value,
+                                "operation": "set"
+                            })
+                            log_debug("Modified: " + prop_name + " = " + new_value_str)
+                    else:
+                        # 路径修改：解析 JSON 值，修改路径，重新序列化
+                        var path_result = _modify_value_by_path(old_raw, prop_info.path, prop_info.value, prop_info.operation)
+                        if path_result.has("error"):
+                            errors.append(path_result.error)
+                            log_error(path_result.error)
+                        else:
+                            line = indent + prop_name + " = " + path_result.new_value_str
+                            modified.append({
+                                "key": prop_name,
+                                "path": prop_info.path,
+                                "old_value": path_result.old_value,
+                                "new_value": path_result.new_value,
+                                "operation": prop_info.operation
+                            })
+                            log_debug("Modified path: " + prop_info.path)
         
         new_lines.append(line)
     
-    # 检查未找到的属性
-    for prop in properties:
+    # 处理添加新属性（如果属性不存在）
+    for top_key in prop_map.keys():
         var found = false
         for m in modified:
-            if m.key == prop.key:
+            if m.key == top_key or m.key == "":
                 found = true
                 break
+        
         if not found:
-            errors.append("Property not found: " + prop.key)
-            log_error("Property not found: " + prop.key)
+            var prop_info = prop_map[top_key]
+            # 只有 set 操作才添加新属性
+            if prop_info.operation == "set":
+                if prop_info.path == "" or prop_info.path == top_key:
+                    # 添加新的顶层属性
+                    var new_line = top_key + " = " + _value_to_string(prop_info.value)
+                    new_lines.append(new_line)
+                    modified.append({
+                        "key": top_key,
+                        "old_value": null,
+                        "new_value": prop_info.value,
+                        "operation": "add"
+                    })
+                    log_debug("Added new property: " + top_key)
+                else:
+                    errors.append("Cannot add path '" + prop_info.path + "': parent property '" + top_key + "' not found")
+                    log_error("Cannot add path: parent property not found")
+            else:
+                if prop_info.operation != "delete":
+                    errors.append("Property not found: " + top_key)
+                    log_error("Property not found: " + top_key)
     
     # 保存文件
     var save_file = FileAccess.open(resource_path, FileAccess.WRITE)
@@ -1576,8 +1775,96 @@ func edit_resource(params):
         "success": true,
         "resource_path": resource_path,
         "modified": modified,
-        "errors": errors
+        "errors": errors if errors.size() > 0 else []
     }))
+
+# 根据 JSON 路径修改值（用于嵌套属性和数组）
+# 返回 {new_value_str, old_value, new_value} 或 {error}
+func _modify_value_by_path(raw_value: String, path: String, new_value, operation: String) -> Dictionary:
+    # 从原始值中提取 JSON 部分（去除引号等）
+    var json_str = raw_value
+    
+    # 如果值是字符串包裹的 JSON，需要解析
+    if raw_value.begins_with('"') and raw_value.ends_with('"'):
+        json_str = raw_value.substr(1, raw_value.length() - 2)
+        # 处理转义
+        json_str = json_str.replace('\\"', '"').replace('\\\\', '\\')
+    
+    # 尝试解析 JSON
+    var json = JSON.new()
+    var parse_result = json.parse(json_str)
+    if parse_result != OK:
+        # 如果不是 JSON，可能简单值，尝试直接处理
+        if path.find(".") == -1 and path.find("[") == -1:
+            return {"new_value_str": _value_to_string(new_value), "old_value": raw_value, "new_value": new_value}
+        return {"error": "Value is not a valid JSON for path modification"}
+    
+    var data = json.get_data()
+    
+    # 解析路径
+    var path_parts = _parse_json_path(path)
+    if path_parts.is_empty():
+        return {"error": "Invalid path: " + path}
+    
+    # 定位到目标位置（除了最后一个部件）
+    var current: Variant = data
+    for i in range(path_parts.size() - 1):
+        var part = path_parts[i]
+        if part.is_index:
+            if typeof(current) != TYPE_ARRAY:
+                return {"error": "Path '" + part.key + "' is not an array"}
+            if part.index < 0 or part.index >= current.size():
+                return {"error": "Index " + str(part.index) + " out of bounds"}
+            current = current[part.index]
+        else:
+            if typeof(current) != TYPE_DICTIONARY:
+                return {"error": "Cannot access '" + part.key + "' on non-object"}
+            if not current.has(part.key):
+                return {"error": "Property '" + part.key + "' not found"}
+            current = current[part.key]
+    
+    # 处理最后一个部件
+    var last_part = path_parts[path_parts.size() - 1]
+    var old_value = null
+    
+    if operation == "delete":
+        if last_part.is_index:
+            if typeof(current) != TYPE_ARRAY:
+                return {"error": "Cannot delete index on non-array"}
+            if last_part.index < 0 or last_part.index >= current.size():
+                return {"error": "Index " + str(last_part.index) + " out of bounds"}
+            old_value = current[last_part.index]
+            current.remove_at(last_part.index)
+        else:
+            if typeof(current) != TYPE_DICTIONARY:
+                return {"error": "Cannot delete property on non-object"}
+            if not current.has(last_part.key):
+                return {"error": "Property '" + last_part.key + "' not found"}
+            old_value = current[last_part.key]
+            current.erase(last_part.key)
+    elif operation == "append":
+        if typeof(current) != TYPE_ARRAY:
+            return {"error": "Cannot append to non-array"}
+        current.append(new_value)
+        old_value = null
+    else:  # set
+        if last_part.is_index:
+            if typeof(current) != TYPE_ARRAY:
+                return {"error": "Cannot set index on non-array"}
+            if last_part.index < 0 or last_part.index >= current.size():
+                return {"error": "Index " + str(last_part.index) + " out of bounds"}
+            old_value = current[last_part.index]
+            current[last_part.index] = new_value
+        else:
+            if typeof(current) != TYPE_DICTIONARY:
+                return {"error": "Cannot set property on non-object"}
+            if current.has(last_part.key):
+                old_value = current[last_part.key]
+            current[last_part.key] = new_value
+    
+    # 重新序列化
+    var new_json_str = JSON.stringify(data)
+    return {"new_value_str": new_json_str, "old_value": old_value, "new_value": new_value}
 
 # 获取行缩进
 func _get_line_indent(line: String) -> String:

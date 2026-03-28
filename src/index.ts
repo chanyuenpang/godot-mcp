@@ -232,6 +232,41 @@ class GodotServer {
   }
 
   /**
+   * Extract JSON from Godot operation output (ignore [INFO]/[DEBUG] logs)
+   * Uses regex to find JSON objects in the output
+   */
+  private extractJsonFromOutput(output: string): string | null {
+    // 使用正则表达式匹配 JSON 对象（包括嵌套结构）
+    // 查找所有以 {"success" 或 {"error" 开头的 JSON 对象
+    const jsonRegex = /\{"(?:success|error)[^]*?\"\}\s*$/g;
+    
+    // 方法1：尝试从输出末尾找到完整的 JSON
+    // 处理 Windows 换行符
+    const normalizedOutput = output.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = normalizedOutput.split('\n');
+    
+    // 从后向前查找 JSON 行
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith('{') && line.endsWith('}')) {
+        try {
+          // 验证是否是有效的 JSON
+          const parsed = JSON.parse(line);
+          // 确保是结果对象（包含 success 或 error）
+          if (parsed.success !== undefined || parsed.error !== undefined) {
+            return line;
+          }
+        } catch {
+          // 不是有效的 JSON，继续查找
+          continue;
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  /**
    * Validate a path to prevent path traversal attacks
    */
   private validatePath(path: string): boolean {
@@ -958,7 +993,7 @@ class GodotServer {
         },
         {
           name: 'read_resource',
-          description: 'Read properties from a Godot resource file (.tres, .res)',
+          description: 'Read properties from a Godot resource file (.tres, .res). Supports JSON path to read nested values.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -970,13 +1005,17 @@ class GodotServer {
                 type: 'string',
                 description: 'Path to the resource file (relative to project, e.g., "data/buffs/fire_damage.tres")',
               },
+              path: {
+                type: 'string',
+                description: 'Optional JSON path to read a specific nested value. Examples: "metadata.author", "items[0]", "items[0].name". If omitted, returns all properties.',
+              },
             },
             required: ['projectPath', 'resourcePath'],
           },
         },
         {
           name: 'edit_resource',
-          description: 'Edit properties of a Godot resource file (.tres, .res)',
+          description: 'Edit properties of a Godot resource file (.tres, .res). Supports JSON path operations: set/delete/append.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -990,7 +1029,7 @@ class GodotServer {
               },
               properties: {
                 type: 'array',
-                description: 'Array of properties to modify',
+                description: 'Array of properties to modify. Each property supports: key (property name), value (new value), path (JSON path for nested access), operation (set/delete/append).',
                 items: {
                   type: 'object',
                   properties: {
@@ -1001,8 +1040,17 @@ class GodotServer {
                     value: {
                       description: 'New value for the property (type should match original)',
                     },
+                    path: {
+                      type: 'string',
+                      description: 'Optional JSON path for nested access. Examples: "metadata.author", "items[0]", "items[0].name"',
+                    },
+                    operation: {
+                      type: 'string',
+                      enum: ['set', 'delete', 'append'],
+                      description: 'Operation type: "set" (default), "delete" (remove property/array item), "append" (add to array)',
+                    },
                   },
-                  required: ['key', 'value'],
+                  required: ['key'],
                 },
               },
             },
@@ -2411,9 +2459,14 @@ class GodotServer {
       }
 
       // Prepare parameters for the operation
-      const params = {
+      const params: any = {
         resourcePath: args.resourcePath,
       };
+      
+      // 支持路径参数
+      if (args.path) {
+        params.path = args.path;
+      }
 
       // Execute the operation
       const { stdout, stderr } = await this.executeOperation('read_resource', params, args.projectPath);
@@ -2428,6 +2481,35 @@ class GodotServer {
         );
       }
 
+      // 解析 stdout，提取 JSON 结果（忽略 [INFO]/[DEBUG] 日志）
+      const jsonResult = this.extractJsonFromOutput(stdout);
+      if (jsonResult) {
+        try {
+          const result = JSON.parse(jsonResult);
+          if (result.success) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(result, null, 2),
+                },
+              ],
+            };
+          } else {
+            return this.createErrorResponse(
+              `Failed to read resource: ${result.error || 'Unknown error'}`,
+              [
+                'Check if the resource file exists',
+                'Verify the resource file is a valid Godot resource (.tres or .res)',
+              ]
+            );
+          }
+        } catch {
+          // JSON 解析失败，返回原始输出
+        }
+      }
+
+      // 如果无法解析 JSON，返回原始输出（向后兼容）
       return {
         content: [
           {
@@ -2531,6 +2613,39 @@ class GodotServer {
         );
       }
 
+      // 解析 stdout，提取 JSON 结果（忽略 [INFO]/[DEBUG] 日志）
+      const jsonResult = this.extractJsonFromOutput(stdout);
+      if (jsonResult) {
+        const result = JSON.parse(jsonResult);
+        if (result.success) {
+          // 返回简洁的成功信息
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: true,
+                  resource_path: result.resource_path,
+                  modified_count: result.modified?.length || 0,
+                  modified: result.modified,
+                  errors: result.errors?.length > 0 ? result.errors : undefined,
+                }, null, 2),
+              },
+            ],
+          };
+        } else {
+          return this.createErrorResponse(
+            `Failed to edit resource: ${result.error || 'Unknown error'}`,
+            [
+              'Check if the resource file exists',
+              'Verify the property names are correct',
+              'Ensure the values match the expected types',
+            ]
+          );
+        }
+      }
+
+      // 如果无法解析 JSON，返回原始输出（向后兼容）
       return {
         content: [
           {
