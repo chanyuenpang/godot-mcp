@@ -12,6 +12,7 @@ import { join, dirname, basename, normalize } from 'path';
 import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
+import WebSocket from 'ws';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -85,6 +86,192 @@ interface OperationParams {
 }
 
 /**
+ * 游戏内 WebSocket 桥接管理器
+ * 连接到游戏内运行的 WebSocket Server，转发 AI 命令到游戏执行
+ */
+class InGameBridge {
+  private ws: WebSocket | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private pendingRequests: Map<number, { resolve: Function; reject: Function; timeout: NodeJS.Timeout }> = new Map();
+  private requestId: number = 0;
+  private connectTime: number | null = null;
+  private reconnectAttempts: number = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 3;
+  private readonly RECONNECT_INTERVAL_MS = 5000;
+  private serverUrl: string = 'ws://127.0.0.1:9090';
+
+  /**
+   * 连接到游戏内 WebSocket Server
+   */
+  connect(url: string = 'ws://127.0.0.1:9090'): Promise<void> {
+    this.serverUrl = url;
+    return new Promise((resolve, reject) => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        resolve();
+        return;
+      }
+
+      // 清理旧连接
+      if (this.ws) {
+        this.ws.removeAllListeners();
+        this.ws.terminate();
+        this.ws = null;
+      }
+
+      const ws = new WebSocket(url);
+
+      const onOpen = () => {
+        this.ws = ws;
+        this.connectTime = Date.now();
+        this.reconnectAttempts = 0;
+        console.error(`[InGameBridge] 已连接到游戏 WebSocket Server: ${url}`);
+        resolve();
+      };
+
+      const onError = (err: Error) => {
+        console.error(`[InGameBridge] 连接错误: ${err.message}`);
+        reject(err);
+      };
+
+      ws.once('open', onOpen);
+      ws.once('error', onError);
+
+      ws.on('message', (data: WebSocket.Data) => {
+        try {
+          const message = JSON.parse(data.toString()) as { id?: number; result?: any; error?: any };
+          if (message.id !== undefined && this.pendingRequests.has(message.id)) {
+            const pending = this.pendingRequests.get(message.id)!;
+            clearTimeout(pending.timeout);
+            this.pendingRequests.delete(message.id);
+            if (message.error) {
+              pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
+            } else {
+              pending.resolve(message.result);
+            }
+          }
+        } catch (e) {
+          console.error(`[InGameBridge] 解析消息失败: ${e}`);
+        }
+      });
+
+      ws.on('close', () => {
+        console.error(`[InGameBridge] 连接已断开`);
+        this.ws = null;
+        this.connectTime = null;
+        // 拒绝所有待处理的请求
+        for (const [id, pending] of this.pendingRequests.entries()) {
+          clearTimeout(pending.timeout);
+          pending.reject(new Error('WebSocket 连接已断开'));
+          this.pendingRequests.delete(id);
+        }
+      });
+
+      ws.on('error', (err: Error) => {
+        console.error(`[InGameBridge] WebSocket 错误: ${err.message}`);
+      });
+    });
+  }
+
+  /**
+   * 断开 WebSocket 连接
+   */
+  disconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      this.ws.terminate();
+      this.ws = null;
+    }
+    this.connectTime = null;
+    this.reconnectAttempts = 0;
+    console.error(`[InGameBridge] 已断开连接`);
+  }
+
+  /**
+   * 发送 JSON-RPC 请求并等待响应
+   */
+  sendRequest(method: string, params?: any, timeoutMs: number = 10000): Promise<any> {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('游戏未连接。请先运行游戏项目。'));
+        return;
+      }
+
+      const id = ++this.requestId;
+      const message = JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        method,
+        params: params ?? {},
+      });
+
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`请求超时 (${timeoutMs}ms)：${method}`));
+      }, timeoutMs);
+
+      this.pendingRequests.set(id, { resolve, reject, timeout });
+      this.ws.send(message);
+    });
+  }
+
+  /**
+   * 自动重连（每 5 秒尝试一次，最多 3 次）
+   */
+  autoReconnect(url?: string): void {
+    const targetUrl = url ?? this.serverUrl;
+    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+      console.error(`[InGameBridge] 已达到最大重连次数 (${this.MAX_RECONNECT_ATTEMPTS})，停止重连`);
+      return;
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectAttempts++;
+      console.error(`[InGameBridge] 尝试第 ${this.reconnectAttempts} 次重连...`);
+      try {
+        await this.connect(targetUrl);
+        this.reconnectTimer = null;
+      } catch {
+        if (this.reconnectAttempts < this.MAX_RECONNECT_ATTEMPTS) {
+          this.autoReconnect(targetUrl);
+        } else {
+          console.error(`[InGameBridge] 重连失败，放弃重连`);
+        }
+      }
+    }, this.RECONNECT_INTERVAL_MS);
+  }
+
+  /**
+   * 获取连接状态
+   */
+  isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * 获取已连接时长（毫秒）
+   */
+  getConnectedDuration(): number | null {
+    if (this.connectTime === null) return null;
+    return Date.now() - this.connectTime;
+  }
+
+  /**
+   * 获取服务器地址
+   */
+  getServerUrl(): string {
+    return this.serverUrl;
+  }
+}
+
+/**
  * Main server class for the Godot MCP server
  */
 class GodotServer {
@@ -94,6 +281,7 @@ class GodotServer {
   private operationsScriptPath: string;
   private validatedPaths: Map<string, boolean> = new Map();
   private strictPathValidation: boolean = false;
+  private bridge: InGameBridge = new InGameBridge();
 
   /**
    * Parameter name mappings between snake_case and camelCase
@@ -453,6 +641,8 @@ class GodotServer {
       this.activeProcess.process.kill();
       this.activeProcess = null;
     }
+    // 断开游戏内 WebSocket 连接
+    this.bridge.disconnect();
     await this.server.close();
   }
 
@@ -1057,6 +1247,42 @@ class GodotServer {
             required: ['projectPath', 'resourcePath', 'properties'],
           },
         },
+        {
+          name: 'ingame_command',
+          description: '转发命令到游戏内执行。需要游戏已运行并通过 WebSocket 连接（端口 9090）。',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              tool_name: {
+                type: 'string',
+                description: '要调用的游戏内工具名称（如 get_player_info、spawn_enemy 等）',
+              },
+              arguments: {
+                type: 'object',
+                description: '传递给游戏内工具的参数（可选）',
+              },
+            },
+            required: ['tool_name'],
+          },
+        },
+        {
+          name: 'list_ingame_tools',
+          description: '查询游戏内当前可用的命令列表。需要游戏已运行并通过 WebSocket 连接。',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
+        {
+          name: 'get_ingame_status',
+          description: '查询与游戏内 WebSocket Server 的连接状态，包括连接状态、游戏端口、已连接时长等信息。',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
       ],
     }));
 
@@ -1096,6 +1322,12 @@ class GodotServer {
           return await this.handleReadResource(request.params.arguments);
         case 'edit_resource':
           return await this.handleEditResource(request.params.arguments);
+        case 'ingame_command':
+          return await this.handleIngameCommand(request.params.arguments);
+        case 'list_ingame_tools':
+          return await this.handleListIngameTools();
+        case 'get_ingame_status':
+          return await this.handleGetIngameStatus();
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
@@ -1274,6 +1506,17 @@ class GodotServer {
 
       this.activeProcess = { process, output, errors, startTime: Date.now() };
 
+      // 延迟 3 秒后尝试连接游戏内 WebSocket Server
+      setTimeout(async () => {
+        try {
+          await this.bridge.connect('ws://127.0.0.1:9090');
+          console.error('[SERVER] 已自动连接到游戏内 WebSocket Server');
+        } catch {
+          console.error('[SERVER] 游戏内 WebSocket 连接失败，将尝试重连...');
+          this.bridge.autoReconnect('ws://127.0.0.1:9090');
+        }
+      }, 3000);
+
       return {
         content: [
           {
@@ -1450,6 +1693,9 @@ class GodotServer {
     const output = this.activeProcess.output;
     const errors = this.activeProcess.errors;
     this.activeProcess = null;
+
+    // 断开游戏内 WebSocket 连接
+    this.bridge.disconnect();
 
     return {
       content: [
@@ -2664,6 +2910,111 @@ class GodotServer {
         ]
       );
     }
+  }
+
+  /**
+   * 处理 ingame_command 工具 - 转发命令到游戏内执行
+   */
+  private async handleIngameCommand(args: any) {
+    if (!args?.tool_name) {
+      return this.createErrorResponse(
+        'tool_name 参数是必需的',
+        ['提供要调用的游戏内工具名称']
+      );
+    }
+
+    if (!this.bridge.isConnected()) {
+      return this.createErrorResponse(
+        '游戏未运行或 WebSocket 未连接。请先使用 run_project 启动游戏。',
+        [
+          '使用 run_project 工具启动游戏项目',
+          '游戏必须在端口 9090 启动 WebSocket Server',
+          '使用 get_ingame_status 检查连接状态',
+        ]
+      );
+    }
+
+    try {
+      const result = await this.bridge.sendRequest('tools/call', {
+        name: args.tool_name,
+        arguments: args.arguments ?? {},
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : '未知错误';
+      return this.createErrorResponse(
+        `游戏内命令执行失败: ${errorMessage}`,
+        ['检查游戏是否正常运行', '使用 list_ingame_tools 确认工具名称是否正确']
+      );
+    }
+  }
+
+  /**
+   * 处理 list_ingame_tools 工具 - 获取游戏内可用命令列表
+   */
+  private async handleListIngameTools() {
+    if (!this.bridge.isConnected()) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: '游戏未运行或未连接。请先使用 run_project 启动游戏。',
+          },
+        ],
+      };
+    }
+
+    try {
+      const result = await this.bridge.sendRequest('tools/list', {});
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : '未知错误';
+      return this.createErrorResponse(
+        `获取游戏内工具列表失败: ${errorMessage}`,
+        ['检查游戏是否正常运行']
+      );
+    }
+  }
+
+  /**
+   * 处理 get_ingame_status 工具 - 获取连接状态
+   */
+  private async handleGetIngameStatus() {
+    const connected = this.bridge.isConnected();
+    const duration = this.bridge.getConnectedDuration();
+    const serverUrl = this.bridge.getServerUrl();
+
+    const status = {
+      connected,
+      serverUrl,
+      connectedDurationMs: duration,
+      connectedDurationSeconds: duration !== null ? Math.floor(duration / 1000) : null,
+      gameRunning: this.activeProcess !== null,
+    };
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(status, null, 2),
+        },
+      ],
+    };
   }
 
   /**
