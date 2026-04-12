@@ -1283,6 +1283,24 @@ class GodotServer {
             required: [],
           },
         },
+        {
+          name: 'debugger_continue',
+          description: 'Resume game execution when paused at a Debugger Break. Sends continue command via game process stdin.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
+        {
+          name: 'debugger_status',
+          description: 'Check if the game process is running and stdin is available for debugger commands.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
       ],
     }));
 
@@ -1328,6 +1346,10 @@ class GodotServer {
           return await this.handleListIngameTools();
         case 'get_ingame_status':
           return await this.handleGetIngameStatus();
+        case 'debugger_continue':
+          return await this.handleDebuggerContinue();
+        case 'debugger_status':
+          return await this.handleDebuggerStatus();
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
@@ -3014,6 +3036,149 @@ class GodotServer {
           text: JSON.stringify(status, null, 2),
         },
       ],
+    };
+  }
+
+  private readonly DAP_PORT = 6006;
+
+  /**
+   * 处理 debugger_continue 工具 - 恢复 Debugger Break 暂停的游戏
+   * 优先级：stdin CLI 命令 > DAP 协议
+   */
+  private async handleDebuggerContinue() {
+    const errors: Record<string, string> = {};
+
+    // 方案 1：通过 stdin 发送 CLI 调试器命令（最可靠）
+    if (this.activeProcess && this.activeProcess.process.stdin) {
+      try {
+        this.activeProcess.process.stdin.write('c\n');
+        this.logDebug('Sent "c" to game process stdin (CLI debugger continue)');
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              success: true,
+              method: 'stdin',
+              message: 'Sent continue command to game CLI debugger'
+            }, null, 2)
+          }]
+        };
+      } catch (error: any) {
+        errors.stdin = error.message;
+        this.logDebug(`stdin write failed: ${error.message}`);
+        // 降级到方案 2
+      }
+    } else {
+      errors.stdin = this.activeProcess ? 'stdin not available' : 'no active process';
+    }
+
+    // 方案 2：通过 DAP 协议发送 continue（端口 6006）
+    try {
+      const result = await this.sendDAPContinue();
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            method: 'dap',
+            message: 'Sent continue via DAP protocol',
+            dap_response: result
+          }, null, 2)
+        }]
+      };
+    } catch (dapError: any) {
+      errors.dap = dapError.message;
+      this.logDebug(`DAP continue failed: ${dapError.message}`);
+    }
+
+    return this.createErrorResponse(
+      'All continue methods failed',
+      [
+        `stdin: ${errors.stdin || 'unknown error'}`,
+        `DAP (port ${this.DAP_PORT}): ${errors.dap || 'unknown error'}`,
+        'Alternative: use stop_project + run_project to restart the game'
+      ]
+    );
+  }
+
+  /**
+   * 通过 DAP 协议向游戏进程发送 continue 命令
+   */
+  private sendDAPContinue(timeoutMs: number = 5000): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const net = require('net');
+      const client = new net.Socket();
+      let responseData = '';
+      let resolved = false;
+
+      const timeout = setTimeout(() => {
+        client.destroy();
+        if (!resolved) {
+          resolved = true;
+          reject(new Error('DAP 连接超时'));
+        }
+      }, timeoutMs);
+
+      client.connect(this.DAP_PORT, '127.0.0.1', () => {
+        // DAP 协议格式：Content-Length 头 + JSON 体
+        const body = JSON.stringify({
+          seq: 1,
+          type: 'request',
+          command: 'continue',
+          arguments: { threadId: 1 }
+        });
+        const header = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n`;
+        client.write(header + body);
+      });
+
+      client.on('data', (data: Buffer) => {
+        responseData += data.toString();
+        // 检查是否收到完整的 DAP 响应（包含 Content-Length 头和 JSON 体）
+        const bodyMatch = responseData.match(/Content-Length: (\d+)\r\n\r\n([\s\S]*)/);
+        if (bodyMatch) {
+          const expectedLength = parseInt(bodyMatch[1]);
+          const body = bodyMatch[2];
+          if (body.length >= expectedLength) {
+            clearTimeout(timeout);
+            client.destroy();
+            if (!resolved) {
+              resolved = true;
+              try {
+                resolve(JSON.parse(body.substring(0, expectedLength)));
+              } catch (e) {
+                reject(new Error('DAP 响应解析失败'));
+              }
+            }
+          }
+        }
+      });
+
+      client.on('error', (err: Error) => {
+        clearTimeout(timeout);
+        if (!resolved) {
+          resolved = true;
+          reject(new Error('DAP 连接失败: ' + err.message));
+        }
+      });
+
+      client.on('close', () => {
+        clearTimeout(timeout);
+      });
+    });
+  }
+
+  /**
+   * 处理 debugger_status 工具 - 查询调试器状态
+   */
+  private async handleDebuggerStatus() {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          active_process: !!this.activeProcess,
+          stdin_available: !!(this.activeProcess?.process?.stdin),
+        }, null, 2)
+      }]
     };
   }
 
