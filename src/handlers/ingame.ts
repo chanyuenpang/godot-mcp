@@ -53,7 +53,8 @@ export async function handleGetIngameStatus(server: GodotServer): Promise<ToolRe
       serverUrl,
       connectedDurationMs: duration,
       connectedDurationSeconds: duration !== null ? Math.floor(duration / 1000) : null,
-      gameRunning: server.activeProcess !== null,
+      // 只要 bridge 已连上，说明游戏在运行（即使 activeProcess 为 null）
+      gameRunning: connected || server.activeProcess !== null,
     },
   };
 }

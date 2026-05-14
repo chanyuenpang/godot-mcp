@@ -43,10 +43,16 @@ function output(result: ToolResult, exitCode?: number): void {
 
 /**
  * 创建并初始化 GodotServer 实例
+ * 自动尝试发现并连接已运行的 Godot 进程 WebSocket 服务
  */
 async function createServer(): Promise<GodotServer> {
   const server = new GodotServer();
   await server.ensureGodotPath();
+  // 尝试连接已运行的 detached Godot 进程
+  const connected = await GodotServer.tryConnectRunning(server.bridge);
+  if (connected) {
+    console.error('[CLI] Connected to running Godot process via WebSocket');
+  }
   return server;
 }
 

@@ -5,7 +5,7 @@
 
 import { fileURLToPath } from 'url';
 import { join, dirname, basename, normalize } from 'path';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { spawn, execFile } from 'child_process';
 import type { StdioOptions } from 'child_process';
 import { promisify } from 'util';
@@ -380,6 +380,8 @@ export class GodotServer {
     this.activeProcess = { process: proc, output, errors, startTime: Date.now() };
     if (detached) {
       proc.unref();
+      // detached 模式下写入共享状态文件，供后续 CLI 命令发现进程
+      GodotServer.writeStateFile(projectPath, proc.pid ?? process.pid, 9090);
     }
 
     if (!detached) {
@@ -501,6 +503,83 @@ export class GodotServer {
   /**
    * 清理资源
    */
+    // ─── 共享状态文件管理（detached 进程发现）────────────
+
+  /** 共享状态文件路径 */
+  static readonly STATE_FILE = '/tmp/.godot-mcp-run.json';
+
+  /**
+   * 写入状态文件（detached 启动后调用）
+   */
+  static writeStateFile(projectPath: string, pid: number, port: number = 9090): void {
+    try {
+      const state = {
+        pid,
+        projectPath,
+        port,
+        startTime: Date.now(),
+      };
+      writeFileSync(GodotServer.STATE_FILE, JSON.stringify(state, null, 2));
+      console.error(`[GodotServer] Wrote state file: PID=${pid}, port=${port}`);
+    } catch (e) {
+      console.error(`[GodotServer] Failed to write state file: ${e}`);
+    }
+  }
+
+  /**
+   * 清除状态文件
+   */
+  static clearStateFile(): void {
+    try {
+      if (existsSync(GodotServer.STATE_FILE)) {
+        unlinkSync(GodotServer.STATE_FILE);
+      }
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * 尝试连接到已运行的 Godot 进程的 WebSocket 服务
+   * @returns true 如果成功连接
+   */
+  static async tryConnectRunning(bridge: InGameBridge): Promise<boolean> {
+    // 1) 检查状态文件
+    const state = GodotServer.readStateFile();
+    if (!state) return false;
+
+    const { pid, port } = state;
+
+    // 2) 检查 PID 是否存活
+    try {
+      process.kill(pid, 0); // 信号 0 只检查存在性
+    } catch {
+      console.error(`[GodotServer] State file has dead PID=${pid}, cleaning up`);
+      GodotServer.clearStateFile();
+      return false;
+    }
+
+    // 3) 尝试连接 WebSocket
+    try {
+      await bridge.connect(`ws://127.0.0.1:${port}`);
+      return true;
+    } catch (e) {
+      console.error(`[GodotServer] Bridge connect failed: ${e}`);
+      return false;
+    }
+  }
+
+  /**
+   * 读取共享状态文件
+   */
+  private static readStateFile(): { pid: number; projectPath: string; port: number; startTime: number } | null {
+    try {
+      if (!existsSync(GodotServer.STATE_FILE)) return null;
+      const raw = readFileSync(GodotServer.STATE_FILE, 'utf8');
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
   public async cleanup(): Promise<void> {
     this.logDebug('Cleaning up resources');
     if (this.activeProcess) {
@@ -508,6 +587,7 @@ export class GodotServer {
       this.activeProcess.process.kill();
       this.activeProcess = null;
     }
+    GodotServer.clearStateFile();
     this.bridge.disconnect();
   }
 }
