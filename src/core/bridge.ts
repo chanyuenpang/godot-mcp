@@ -15,6 +15,7 @@ export class InGameBridge {
   private readonly MAX_RECONNECT_ATTEMPTS = 3;
   private readonly RECONNECT_INTERVAL_MS = 5000;
   private serverUrl: string = 'ws://127.0.0.1:9090';
+  public silent: boolean = false;
 
   /**
    * 连接到游戏内 WebSocket Server
@@ -40,7 +41,7 @@ export class InGameBridge {
         this.ws = ws;
         this.connectTime = Date.now();
         this.reconnectAttempts = 0;
-        console.error(`[InGameBridge] 已连接到游戏 WebSocket Server: ${url}`);
+        if (!this.silent) console.error(`[InGameBridge] 已连接到游戏 WebSocket Server: ${url}`);
         resolve();
       };
 

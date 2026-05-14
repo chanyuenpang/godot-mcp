@@ -32,6 +32,7 @@ import {
   handleListIngameTools,
   handleGetIngameStatus,
 } from './handlers/ingame.js';
+import { handleGetActions, handleRunAction } from './handlers/actions.js';
 
 /**
  * 输出 JSON 结果到 stdout 并退出
@@ -43,15 +44,23 @@ function output(result: ToolResult, exitCode?: number): void {
 
 /**
  * 创建并初始化 GodotServer 实例
- * 自动尝试发现并连接已运行的 Godot 进程 WebSocket 服务
+ * @param options.needGodotPath 是否需要检测 Godot 路径（默认 true）
  */
-async function createServer(): Promise<GodotServer> {
+async function createServer(options: { needGodotPath?: boolean } = {}): Promise<GodotServer> {
+  const { needGodotPath = true } = options;
   const server = new GodotServer();
-  await server.ensureGodotPath();
-  // 尝试连接已运行的 detached Godot 进程
+  server.bridge.silent = true;
+  if (needGodotPath) {
+    await server.ensureGodotPath();
+  }
+  // 尝试连接已运行的 Godot 进程
   const connected = await GodotServer.tryConnectRunning(server.bridge);
-  if (connected) {
-    console.error('[CLI] Connected to running Godot process via WebSocket');
+  if (!connected) {
+    try {
+      await server.bridge.connect();
+    } catch {
+      // 连接失败是可接受的
+    }
   }
   return server;
 }
@@ -159,7 +168,7 @@ ingame
   .requiredOption('--tool <name>', '工具名称')
   .option('--args <json>', '参数 JSON 字符串', '{}')
   .action(async (opts) => {
-    const server = await createServer();
+    const server = await createServer({ needGodotPath: false });
     let args: any = {};
     try {
       args = JSON.parse(opts.args);
@@ -178,7 +187,7 @@ ingame
   .command('list')
   .description('列出游戏内可用工具')
   .action(async () => {
-    const server = await createServer();
+    const server = await createServer({ needGodotPath: false });
     await run(() => handleListIngameTools(server));
   });
 
@@ -186,8 +195,35 @@ ingame
   .command('status')
   .description('查看 WebSocket 连接状态')
   .action(async () => {
-    const server = await createServer();
+    const server = await createServer({ needGodotPath: false });
     await run(() => handleGetIngameStatus(server));
+  });
+
+// ─── 行动命令 ───────────────────────────────────────
+
+const actions = program.command('actions').description('游戏行动命令');
+
+actions
+  .command('list')
+  .description('获取当前可用行动列表')
+  .action(async () => {
+    const server = await createServer({ needGodotPath: false });
+    await run(() => handleGetActions(server));
+  });
+
+actions
+  .command('run')
+  .description('执行指定行动（成功后直接返回下一步可用行动）')
+  .argument('<id>', '行动 ID')
+  .action(async (id: string) => {
+    const server = await createServer({ needGodotPath: false });
+    const result = await handleRunAction(server, id);
+    if (!result.success) {
+      output(result);
+      return;
+    }
+    // 执行成功，直接返回下一步可用行动
+    await run(() => handleGetActions(server));
   });
 
 // ─── 调试命令 ───────────────────────────────────────────────

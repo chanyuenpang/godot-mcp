@@ -552,7 +552,7 @@ export class GodotServer {
     try {
       process.kill(pid, 0); // 信号 0 只检查存在性
     } catch {
-      console.error(`[GodotServer] State file has dead PID=${pid}, cleaning up`);
+      if (!bridge.silent) console.error(`[GodotServer] State file has dead PID=${pid}, cleaning up`);
       GodotServer.clearStateFile();
       return false;
     }
@@ -562,7 +562,7 @@ export class GodotServer {
       await bridge.connect(`ws://127.0.0.1:${port}`);
       return true;
     } catch (e) {
-      console.error(`[GodotServer] Bridge connect failed: ${e}`);
+      if (!bridge.silent) console.error(`[GodotServer] Bridge connect failed: ${e}`);
       return false;
     }
   }

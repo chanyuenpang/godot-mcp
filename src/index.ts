@@ -22,6 +22,7 @@ import { handleCreateScene, handleAddNode, handleLoadSprite, handleSaveScene, ha
 import { handleReadResource, handleEditResource, handleGetUid, handleUpdateProjectUids } from './handlers/resource.js';
 import { handleGetDebugOutput } from './handlers/debug.js';
 import { handleIngameCommand, handleListIngameTools, handleGetIngameStatus } from './handlers/ingame.js';
+import { handleGetActions, handleRunAction } from './handlers/actions.js';
 
 /**
  * ToolResult → MCP Content 格式转换
@@ -267,6 +268,22 @@ const TOOL_DEFINITIONS = [
     description: '查询与游戏内 WebSocket Server 的连接状态，包括连接状态、游戏端口、已连接时长等信息。',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'get_actions',
+    description: '获取当前游戏内所有可用行动选项列表（Actions）',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'run_action',
+    description: '执行指定的游戏行动',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action_id: { type: 'string', description: '行动 ID' },
+      },
+      required: ['action_id'],
+    },
+  },
 ];
 
 /**
@@ -312,6 +329,10 @@ async function dispatch(godotServer: GodotServer, toolName: string, args: any): 
       return await handleListIngameTools(godotServer);
     case 'get_ingame_status':
       return await handleGetIngameStatus(godotServer);
+    case 'get_actions':
+      return await handleGetActions(godotServer);
+    case 'run_action':
+      return await handleRunAction(godotServer, args.action_id);
     default:
       throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${toolName}`);
   }
