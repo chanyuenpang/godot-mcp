@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { join, dirname, basename, normalize } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { spawn, execFile } from 'child_process';
+import type { StdioOptions } from 'child_process';
 import { promisify } from 'util';
 
 import type { GodotProcess, GodotServerConfig, OperationParams, LogEntry } from './types.js';
@@ -14,6 +15,10 @@ import { InGameBridge } from './bridge.js';
 import { detectGodotPath, isValidGodotPath, isValidGodotPathSync, isGodot44OrLater } from './godot-path.js';
 
 const execFileAsync = promisify(execFile);
+
+type GodotLaunchOptions = {
+  detached?: boolean;
+};
 
 // 调试模式常量
 const DEBUG_MODE: boolean = process.env.DEBUG === 'true';
@@ -298,20 +303,25 @@ export class GodotServer {
   /**
    * 启动 Godot 编辑器
    */
-  public launchEditor(projectPath: string): void {
+  public launchEditor(projectPath: string, options: GodotLaunchOptions = {}): void {
     this.logDebug(`Launching Godot editor for project: ${projectPath}`);
-    const process = spawn(this.godotPath!, ['-e', '--path', projectPath], {
-      stdio: 'pipe',
+    const detached = options.detached === true;
+    const proc = spawn(this.godotPath!, ['-e', '--path', projectPath], {
+      detached,
+      stdio: detached ? 'ignore' : 'pipe',
     });
-    process.on('error', (err: Error) => {
+    proc.on('error', (err: Error) => {
       console.error('Failed to start Godot editor:', err);
     });
+    if (detached) {
+      proc.unref();
+    }
   }
 
   /**
    * 运行 Godot 项目（debug 模式）
    */
-  public runProject(projectPath: string, scene?: string): void {
+  public runProject(projectPath: string, scene?: string, options: GodotLaunchOptions = {}): void {
     // 杀掉已有进程
     if (this.activeProcess) {
       this.logDebug('Killing existing Godot process before starting a new one');
@@ -325,7 +335,9 @@ export class GodotServer {
     }
 
     this.logDebug(`Running Godot project: ${projectPath}`);
-    const proc = spawn(this.godotPath!, cmdArgs, { stdio: 'pipe' });
+    const detached = options.detached === true;
+    const stdio: StdioOptions = detached ? 'ignore' : 'pipe';
+    const proc = spawn(this.godotPath!, cmdArgs, { detached, stdio });
     const output: LogEntry[] = [];
     const errors: LogEntry[] = [];
 
@@ -366,17 +378,22 @@ export class GodotServer {
     });
 
     this.activeProcess = { process: proc, output, errors, startTime: Date.now() };
+    if (detached) {
+      proc.unref();
+    }
 
-    // 延迟 3 秒后尝试连接游戏内 WebSocket Server
-    setTimeout(async () => {
-      try {
-        await this.bridge.connect('ws://127.0.0.1:9090');
-        console.error('[SERVER] 已自动连接到游戏内 WebSocket Server');
-      } catch {
-        console.error('[SERVER] 游戏内 WebSocket 连接失败，将尝试重连...');
-        this.bridge.autoReconnect('ws://127.0.0.1:9090');
-      }
-    }, 3000);
+    if (!detached) {
+      // 延迟 3 秒后尝试连接游戏内 WebSocket Server
+      setTimeout(async () => {
+        try {
+          await this.bridge.connect('ws://127.0.0.1:9090');
+          console.error('[SERVER] 已自动连接到游戏内 WebSocket Server');
+        } catch {
+          console.error('[SERVER] 游戏内 WebSocket 连接失败，将尝试重连...');
+          this.bridge.autoReconnect('ws://127.0.0.1:9090');
+        }
+      }, 3000);
+    }
   }
 
   /**

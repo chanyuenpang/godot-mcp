@@ -36,9 +36,9 @@ import {
 /**
  * 输出 JSON 结果到 stdout 并退出
  */
-function output(result: ToolResult, exitCode?: number): never {
+function output(result: ToolResult, exitCode?: number): void {
   process.stdout.write(JSON.stringify(result) + '\n');
-  process.exit(exitCode ?? (result.success ? 0 : 1));
+  process.exitCode = exitCode ?? (result.success ? 0 : 1);
 }
 
 /**
@@ -53,9 +53,9 @@ async function createServer(): Promise<GodotServer> {
 /**
  * 执行 handler 并输出结果
  */
-async function run(handler: () => Promise<ToolResult>): Promise<never> {
+async function run(handler: () => Promise<ToolResult>): Promise<void> {
   const result = await handler();
-  return output(result);
+  output(result);
 }
 
 // 创建主命令
@@ -78,6 +78,8 @@ program
       handleRunProject(server, {
         projectPath: resolve(opts.path),
         scene: opts.scene,
+      }, {
+        detachProcess: true,
       })
     );
   });
@@ -99,6 +101,8 @@ program
     await run(() =>
       handleLaunchEditor(server, {
         projectPath: resolve(opts.path),
+      }, {
+        detachProcess: true,
       })
     );
   });

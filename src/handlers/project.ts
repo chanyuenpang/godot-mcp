@@ -10,10 +10,14 @@ import { readFileSync } from 'fs';
 import type { ToolResult } from '../core/types.js';
 import type { GodotServer } from '../core/godot-server.js';
 
+type LaunchHandlerOptions = {
+  detachProcess?: boolean;
+};
+
 /**
  * 启动 Godot 编辑器
  */
-export async function handleLaunchEditor(server: GodotServer, args: any): Promise<ToolResult> {
+export async function handleLaunchEditor(server: GodotServer, args: any, options: LaunchHandlerOptions = {}): Promise<ToolResult> {
   args = server.normalizeParameters(args);
 
   if (!args.projectPath) {
@@ -33,14 +37,14 @@ export async function handleLaunchEditor(server: GodotServer, args: any): Promis
     return { success: false, error: `Not a valid Godot project: ${args.projectPath}` };
   }
 
-  server.launchEditor(args.projectPath);
+  server.launchEditor(args.projectPath, { detached: options.detachProcess === true });
   return { success: true, data: `Godot editor launched for project at ${args.projectPath}` };
 }
 
 /**
  * 运行 Godot 项目
  */
-export async function handleRunProject(server: GodotServer, args: any): Promise<ToolResult> {
+export async function handleRunProject(server: GodotServer, args: any, options: LaunchHandlerOptions = {}): Promise<ToolResult> {
   args = server.normalizeParameters(args);
 
   if (!args.projectPath) {
@@ -60,7 +64,7 @@ export async function handleRunProject(server: GodotServer, args: any): Promise<
     return { success: false, error: 'Could not find a valid Godot executable path' };
   }
 
-  server.runProject(args.projectPath, args.scene);
+  server.runProject(args.projectPath, args.scene, { detached: options.detachProcess === true });
   return { success: true, data: 'Godot project started in debug mode. Use get_debug_output to see output.' };
 }
 
