@@ -213,17 +213,43 @@ actions
 
 actions
   .command('run')
-  .description('执行指定行动（成功后直接返回下一步可用行动）')
+  .description('执行指定行动（成功后自动等待状态更新并返回下一步可用行动）')
   .argument('<id>', '行动 ID')
   .action(async (id: string) => {
     const server = await createServer({ needGodotPath: false });
+
+    // 记录执行前的 actions 快照
+    const beforeResult = await handleGetActions(server);
+    const beforeSnapshot = beforeResult.success ? JSON.stringify(beforeResult.data) : null;
+
     const result = await handleRunAction(server, id);
     if (!result.success) {
       output(result);
       return;
     }
-    // 执行成功，直接返回下一步可用行动
-    await run(() => handleGetActions(server));
+
+    // 渐进等待：如果列表未变化则认为游戏仍在加载
+    const delays = [500, 1500, 3000];
+    for (let i = 0; i < delays.length; i++) {
+      await new Promise(r => setTimeout(r, delays[i]));
+      const listResult = await handleGetActions(server);
+      if (!listResult.success) {
+        // 连接失败等情况，继续重试
+        if (i === delays.length - 1) { output(listResult); return; }
+        continue;
+      }
+      const currentSnapshot = JSON.stringify(listResult.data);
+      // 列表变化了 → 立即返回
+      if (currentSnapshot !== beforeSnapshot) {
+        output(listResult);
+        return;
+      }
+      // 最后一次重试仍未变化 → 直接返回（可能该 action 确实不改变列表）
+      if (i === delays.length - 1) {
+        output(listResult);
+        return;
+      }
+    }
   });
 
 // ─── 调试命令 ───────────────────────────────────────────────
@@ -362,6 +388,41 @@ uid
         projectPath: resolve(opts.project),
       })
     );
+  });
+
+// ─── Web 控制器命令 ──────────────────────────────────────────
+
+program
+  .command('web')
+  .description('启动手机 Web 控制器（局域网内手机点按钮控制游戏）')
+  .option('-p, --port <port>', 'HTTP 服务端口', '8080')
+  .option('--host <host>', '绑定地址', '0.0.0.0')
+  .option('--game-port <port>', 'Godot 游戏 WebSocket 端口', '9090')
+  .action(async (opts) => {
+    const { WebController } = await import('./web-controller.js');
+
+    const controller = new WebController({
+      port: parseInt(opts.port, 10),
+      host: opts.host,
+      gamePort: parseInt(opts.gamePort, 10),
+    });
+
+    // 优雅关闭
+    const shutdown = () => {
+      console.log('\n正在关闭 Web 控制器...');
+      controller.stop();
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+
+    try {
+      await controller.start();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`启动失败: ${message}`);
+      process.exit(1);
+    }
   });
 
 // ─── serve 命令（MCP stdio 模式）─────────────────────────────
