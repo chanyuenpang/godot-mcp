@@ -218,6 +218,7 @@ export class WebController {
 
   /**
    * 处理执行行动请求
+   * 执行完 action 后轮询等待 actions 变化，避免返回旧列表
    */
   private async handleRunAction(ws: WebSocket, actionId: string): Promise<void> {
     if (!this.bridge.isConnected()) {
@@ -226,19 +227,51 @@ export class WebController {
     }
 
     try {
-      // 执行行动
+      // 1. 先获取当前 actions 作为对比基准
+      const beforeResult = await this.bridge.sendRequest('tools/call', {
+        name: 'get_available_actions',
+        arguments: {},
+      });
+      const beforeIds = this.extractActionIds(beforeResult);
+
+      // 2. 执行行动
       await this.bridge.sendRequest('tools/call', {
         name: 'execute_action',
         arguments: { action_id: actionId },
       });
 
-      // 执行成功后自动获取新行动列表
-      const result = await this.bridge.sendRequest('tools/call', {
-        name: 'get_available_actions',
-        arguments: {},
-      });
+      // 3. 轮询等待 actions 变化（最多 5 秒，每 500ms 检查一次）
+      const maxWait = 5000;
+      const interval = 500;
+      let elapsed = 0;
+      let actions: any[] = [];
 
-      const actions = this.extractActions(result);
+      while (elapsed < maxWait) {
+        await new Promise(r => setTimeout(r, interval));
+        elapsed += interval;
+
+        const result = await this.bridge.sendRequest('tools/call', {
+          name: 'get_available_actions',
+          arguments: {},
+        });
+        actions = this.extractActions(result);
+        const currentIds = this.extractActionIds(result);
+
+        if (currentIds !== beforeIds) {
+          // actions 已变化，立刻返回
+          break;
+        }
+      }
+
+      // 超时后 actions 仍未变化，也返回当前列表
+      if (actions.length === 0) {
+        const result = await this.bridge.sendRequest('tools/call', {
+          name: 'get_available_actions',
+          arguments: {},
+        });
+        actions = this.extractActions(result);
+      }
+
       const response: ServerMessage = {
         type: 'actions_update',
         actions,
@@ -249,6 +282,14 @@ export class WebController {
       const message = err instanceof Error ? err.message : String(err);
       this.sendError(ws, '执行行动失败: ' + message);
     }
+  }
+
+  /**
+   * 从 bridge 返回结果中提取 action ID 列表，排序后拼为字符串用于对比
+   */
+  private extractActionIds(result: any): string {
+    const actions = this.extractActions(result);
+    return actions.map((a: any) => a.id ?? '').sort().join(',');
   }
 
   /**
