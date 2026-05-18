@@ -542,29 +542,38 @@ export class GodotServer {
    * @returns true 如果成功连接
    */
   static async tryConnectRunning(bridge: InGameBridge): Promise<boolean> {
+    const tryConnect = async (url: string, timeoutMs: number): Promise<boolean> => {
+      try {
+        await bridge.connect(url, timeoutMs);
+        return true;
+      } catch (e) {
+        console.error(`[GodotServer] Bridge connect failed (${url}): ${e}`);
+        return false;
+      }
+    };
+
     // 1) 检查状态文件
     const state = GodotServer.readStateFile();
-    if (!state) return false;
 
-    const { pid, port } = state;
+    if (state) {
+      const { pid, port } = state;
 
-    // 2) 检查 PID 是否存活
-    try {
-      process.kill(pid, 0); // 信号 0 只检查存在性
-    } catch {
-      if (!bridge.silent) console.error(`[GodotServer] State file has dead PID=${pid}, cleaning up`);
-      GodotServer.clearStateFile();
-      return false;
+      // 2) 检查 PID 是否存活
+      try {
+        process.kill(pid, 0); // 信号 0 只检查存在性
+      } catch {
+        console.error(`[GodotServer] State file has dead PID=${pid}, cleaning up`);
+        GodotServer.clearStateFile();
+      }
+
+      // 3) 尝试连接 WebSocket
+      if (await tryConnect(`ws://127.0.0.1:${port}`, 3000)) {
+        return true;
+      }
     }
 
-    // 3) 尝试连接 WebSocket
-    try {
-      await bridge.connect(`ws://127.0.0.1:${port}`);
-      return true;
-    } catch (e) {
-      if (!bridge.silent) console.error(`[GodotServer] Bridge connect failed: ${e}`);
-      return false;
-    }
+    // 4) 没有 state file（例如用户直接启动可见 Godot）时，短超时尝试默认端口
+    return await tryConnect('ws://127.0.0.1:9090', 1000);
   }
 
   /**

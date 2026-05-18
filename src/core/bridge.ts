@@ -20,7 +20,7 @@ export class InGameBridge {
   /**
    * 连接到游戏内 WebSocket Server
    */
-  connect(url: string = 'ws://127.0.0.1:9090'): Promise<void> {
+  connect(url: string = 'ws://127.0.0.1:9090', timeoutMs: number = 5000): Promise<void> {
     this.serverUrl = url;
     return new Promise((resolve, reject) => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -36,8 +36,29 @@ export class InGameBridge {
       }
 
       const ws = new WebSocket(url);
+      let settled = false;
+      let connectTimeout: NodeJS.Timeout | null = setTimeout(() => {
+        connectTimeout = null;
+        if (settled) return;
+        settled = true;
+        ws.removeListener('open', onOpen);
+        ws.removeListener('error', onError);
+        ws.terminate();
+        reject(new Error(`连接超时 (${timeoutMs}ms): ${url}`));
+      }, timeoutMs);
+
+      const clearConnectTimeout = () => {
+        if (connectTimeout) {
+          clearTimeout(connectTimeout);
+          connectTimeout = null;
+        }
+      };
 
       const onOpen = () => {
+        if (settled) return;
+        settled = true;
+        clearConnectTimeout();
+        ws.removeListener('error', onError);
         this.ws = ws;
         this.connectTime = Date.now();
         this.reconnectAttempts = 0;
@@ -46,6 +67,10 @@ export class InGameBridge {
       };
 
       const onError = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearConnectTimeout();
+        ws.removeListener('open', onOpen);
         console.error(`[InGameBridge] 连接错误: ${err.message}`);
         reject(err);
       };

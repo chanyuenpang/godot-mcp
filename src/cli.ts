@@ -169,18 +169,23 @@ ingame
   .option('--args <json>', '参数 JSON 字符串', '{}')
   .action(async (opts) => {
     const server = await createServer({ needGodotPath: false });
-    let args: any = {};
     try {
-      args = JSON.parse(opts.args);
-    } catch {
-      output({ success: false, error: `无效的 JSON 参数: ${opts.args}` });
+      let args: any = {};
+      try {
+        args = JSON.parse(opts.args);
+      } catch {
+        output({ success: false, error: `无效的 JSON 参数: ${opts.args}` });
+        return;
+      }
+      await run(() =>
+        handleIngameCommand(server, {
+          tool_name: opts.tool,
+          arguments: args,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
     }
-    await run(() =>
-      handleIngameCommand(server, {
-        tool_name: opts.tool,
-        arguments: args,
-      })
-    );
   });
 
 ingame
@@ -188,7 +193,11 @@ ingame
   .description('列出游戏内可用工具')
   .action(async () => {
     const server = await createServer({ needGodotPath: false });
-    await run(() => handleListIngameTools(server));
+    try {
+      await run(() => handleListIngameTools(server));
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 ingame
@@ -196,7 +205,11 @@ ingame
   .description('查看 WebSocket 连接状态')
   .action(async () => {
     const server = await createServer({ needGodotPath: false });
-    await run(() => handleGetIngameStatus(server));
+    try {
+      await run(() => handleGetIngameStatus(server));
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 // ─── 行动命令 ───────────────────────────────────────
