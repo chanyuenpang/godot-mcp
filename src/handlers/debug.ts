@@ -63,23 +63,9 @@ export async function handleGetDebugOutput(server: GodotServer, args: any): Prom
 
   const mergeDuplicates = args.mergeDuplicates !== false;
   const maxLines = args.maxLines || 50;
-  const editorLogSource = server.getEditorSessionLogs(projectPath);
-  const detachedState = GodotServer.readStateFile();
-  const lastRunSnapshot = detachedState ? null : GodotServer.readLastRunSnapshot();
-  const activeLogSource = server.activeProcess;
-  const logSource = editorLogSource
-    ?? activeLogSource
-    ?? (detachedState ? GodotServer.readDetachedLogs(detachedState) : null)
-    ?? (lastRunSnapshot ? GodotServer.readDetachedLogs(lastRunSnapshot) : null);
-  const source = editorLogSource
-    ? 'editor_session_log'
-    : activeLogSource
-      ? 'active_process'
-    : detachedState
-      ? 'detached_state'
-      : lastRunSnapshot
-        ? 'last_failed_run'
-        : 'none';
+  const logSnapshot = server.getPreferredLogSource(projectPath);
+  const logSource = logSnapshot;
+  const source = logSnapshot?.source ?? 'none';
 
   if (!logSource) {
     return { success: false, error: 'No active Godot process or preserved failed run logs.' };

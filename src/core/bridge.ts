@@ -71,7 +71,7 @@ export class InGameBridge {
         settled = true;
         clearConnectTimeout();
         ws.removeListener('open', onOpen);
-        console.error(`[InGameBridge] 连接错误: ${err.message}`);
+        if (!this.silent) console.error(`[InGameBridge] 连接错误: ${err.message}`);
         reject(err);
       };
 
@@ -92,12 +92,12 @@ export class InGameBridge {
             }
           }
         } catch (e) {
-          console.error(`[InGameBridge] 解析消息失败: ${e}`);
+          if (!this.silent) console.error(`[InGameBridge] 解析消息失败: ${e}`);
         }
       });
 
       ws.on('close', () => {
-        console.error(`[InGameBridge] 连接已断开`);
+        if (!this.silent) console.error(`[InGameBridge] 连接已断开`);
         this.ws = null;
         this.connectTime = null;
         // 拒绝所有待处理的请求
@@ -109,7 +109,7 @@ export class InGameBridge {
       });
 
       ws.on('error', (err: Error) => {
-        console.error(`[InGameBridge] WebSocket 错误: ${err.message}`);
+        if (!this.silent) console.error(`[InGameBridge] WebSocket 错误: ${err.message}`);
       });
     });
   }
@@ -129,7 +129,7 @@ export class InGameBridge {
     }
     this.connectTime = null;
     this.reconnectAttempts = 0;
-    console.error(`[InGameBridge] 已断开连接`);
+    if (!this.silent) console.error(`[InGameBridge] 已断开连接`);
   }
 
   /**
@@ -166,7 +166,7 @@ export class InGameBridge {
   autoReconnect(url?: string): void {
     const targetUrl = url ?? this.serverUrl;
     if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
-      console.error(`[InGameBridge] 已达到最大重连次数 (${this.MAX_RECONNECT_ATTEMPTS})，停止重连`);
+      if (!this.silent) console.error(`[InGameBridge] 已达到最大重连次数 (${this.MAX_RECONNECT_ATTEMPTS})，停止重连`);
       return;
     }
 
@@ -176,7 +176,7 @@ export class InGameBridge {
 
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectAttempts++;
-      console.error(`[InGameBridge] 尝试第 ${this.reconnectAttempts} 次重连...`);
+      if (!this.silent) console.error(`[InGameBridge] 尝试第 ${this.reconnectAttempts} 次重连...`);
       try {
         await this.connect(targetUrl);
         this.reconnectTimer = null;
@@ -184,7 +184,7 @@ export class InGameBridge {
         if (this.reconnectAttempts < this.MAX_RECONNECT_ATTEMPTS) {
           this.autoReconnect(targetUrl);
         } else {
-          console.error(`[InGameBridge] 重连失败，放弃重连`);
+          if (!this.silent) console.error(`[InGameBridge] 重连失败，放弃重连`);
         }
       }
     }, this.RECONNECT_INTERVAL_MS);

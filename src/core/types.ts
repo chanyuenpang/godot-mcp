@@ -59,6 +59,13 @@ export interface GodotDetachedState {
   mode?: 'editor' | 'run';
 }
 
+export interface GodotLogSourceSnapshot {
+  source: 'editor_session_log' | 'active_process' | 'detached_state' | 'last_failed_run';
+  output: LogEntry[];
+  errors: LogEntry[];
+  startTime: number;
+}
+
 export interface GodotEditorSession {
   sessionId: string;
   pluginVersion: string;

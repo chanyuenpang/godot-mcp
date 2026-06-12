@@ -18,6 +18,7 @@ import type {
   LogEntry,
   GodotDetachedState,
   GodotEditorProcessInfo,
+  GodotLogSourceSnapshot,
 } from './types.js';
 import { InGameBridge } from './bridge.js';
 import { detectGodotPath, isValidGodotPath, isValidGodotPathSync, isGodot44OrLater } from './godot-path.js';
@@ -155,6 +156,58 @@ export class GodotServer {
       return null;
     }
     return readEditorSessionLogs(projectPath);
+  }
+
+  public getPreferredLogSource(projectPath: string): GodotLogSourceSnapshot | null {
+    const editorLogSource = this.getEditorSessionLogs(projectPath);
+    if (editorLogSource) {
+      return {
+        source: 'editor_session_log',
+        ...editorLogSource,
+      };
+    }
+
+    const detachedState = GodotServer.readStateFile();
+    if (detachedState) {
+      return {
+        source: 'detached_state',
+        ...GodotServer.readDetachedLogs(detachedState),
+      };
+    }
+
+    if (this.activeProcess) {
+      const hasBufferedLogs = this.activeProcess.output.length > 0 || this.activeProcess.errors.length > 0;
+      if (!hasBufferedLogs && (this.activeProcess.outputLogPath || this.activeProcess.errorLogPath)) {
+        return {
+          source: 'active_process',
+          ...GodotServer.readDetachedLogs({
+            pid: this.activeProcess.process.pid ?? process.pid,
+            projectPath,
+            port: 9090,
+            startTime: this.activeProcess.startTime,
+            outputLogPath: this.activeProcess.outputLogPath,
+            errorLogPath: this.activeProcess.errorLogPath,
+            mode: this.activeProcess.mode,
+          }),
+        };
+      }
+      return {
+        source: 'active_process',
+        output: this.activeProcess.output,
+        errors: this.activeProcess.errors,
+        startTime: this.activeProcess.startTime,
+      };
+    }
+
+    const lastRunSnapshot = GodotServer.readLastRunSnapshot();
+    if (lastRunSnapshot) {
+      return {
+        source: 'last_failed_run',
+        ...GodotServer.readDetachedLogs(lastRunSnapshot),
+      };
+    }
+
+    return null;
   }
 
   public async findProjectEditorProcesses(projectPath: string): Promise<GodotEditorProcessInfo[]> {
@@ -400,6 +453,25 @@ export class GodotServer {
     this.launchGodotProcess(projectPath, cmdArgs, 'run', options);
   }
 
+  private stopExistingDetachedRunForProject(projectPath: string): void {
+    const detachedState = GodotServer.readStateFile();
+    if (!detachedState || detachedState.mode !== 'run') {
+      return;
+    }
+
+    if (normalize(detachedState.projectPath) !== normalize(projectPath)) {
+      return;
+    }
+
+    try {
+      process.kill(detachedState.pid);
+    } catch {
+      // stale pid is safe to ignore here
+    }
+
+    GodotServer.clearStateFile();
+  }
+
   private launchGodotProcess(
     projectPath: string,
     cmdArgs: string[],
@@ -410,6 +482,10 @@ export class GodotServer {
     if (this.activeProcess) {
       this.logDebug('Killing existing Godot process before starting a new one');
       this.activeProcess.process.kill();
+    }
+
+    if (mode === 'run') {
+      this.stopExistingDetachedRunForProject(projectPath);
     }
 
     const detached = options.detached === true;
@@ -719,7 +795,9 @@ export class GodotServer {
         await bridge.connect(url, timeoutMs);
         return true;
       } catch (e) {
-        console.error(`[GodotServer] Bridge connect failed (${url}): ${e}`);
+        if (!bridge.silent) {
+          console.error(`[GodotServer] Bridge connect failed (${url}): ${e}`);
+        }
         return false;
       }
     };

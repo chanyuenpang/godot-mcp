@@ -1,0 +1,14 @@
+; Engine configuration file.
+; Minimal smoke project for CLI failure diagnostics.
+
+config_version=5
+
+[application]
+config/name="GodotMcpSmoke"
+run/main_scene="res://Main.tscn"
+
+[rendering]
+renderer/rendering_method="forward_plus"
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")

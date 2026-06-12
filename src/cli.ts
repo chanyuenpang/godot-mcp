@@ -9,6 +9,13 @@ import { resolve } from 'path';
 
 import type { ToolResult } from './core/types.js';
 import { GodotServer } from './core/godot-server.js';
+import {
+  captureCommandLogBaseline,
+  collectFailureDiagnostics,
+  shouldDiagnoseError,
+  waitForBridgeReadyOrDiagnose,
+  withFailureDiagnostics,
+} from './core/failure-diagnostics.js';
 
 // Handlers
 import {
@@ -73,6 +80,37 @@ async function run(handler: () => Promise<ToolResult>): Promise<void> {
   output(result);
 }
 
+async function executeWithFailureDiagnostics(
+  server: GodotServer,
+  handler: () => Promise<ToolResult>,
+  options: {
+    projectPath: string;
+    baseline: ReturnType<typeof captureCommandLogBaseline>;
+  },
+): Promise<ToolResult> {
+  try {
+    const result = await handler();
+    if (result.success || !shouldDiagnoseError(result.error)) {
+      return result;
+    }
+
+    const diagnostic = collectFailureDiagnostics(server, {
+      projectPath: options.projectPath,
+      baseline: options.baseline,
+      transportError: result.error,
+    });
+    return withFailureDiagnostics(result, diagnostic);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const diagnostic = collectFailureDiagnostics(server, {
+      projectPath: options.projectPath,
+      baseline: options.baseline,
+      transportError: message,
+    });
+    return withFailureDiagnostics({ success: false, error: message }, diagnostic);
+  }
+}
+
 // 创建主命令
 const program = new Command();
 program
@@ -89,15 +127,30 @@ program
   .option('--scene <scene>', '指定运行的场景')
   .action(async (opts) => {
     const server = await createServer();
+    const projectPath = resolve(opts.path);
+    const baseline = captureCommandLogBaseline(server, projectPath);
     try {
-      await run(() =>
+      const result = await executeWithFailureDiagnostics(server, () =>
         handleRunProject(server, {
-          projectPath: resolve(opts.path),
+          projectPath,
           scene: opts.scene,
         }, {
           detachProcess: true,
-        })
+        }), {
+          projectPath,
+          baseline,
+        }
       );
+      if (!result.success) {
+        output(result);
+        return;
+      }
+
+      const readinessResult = await waitForBridgeReadyOrDiagnose(server, {
+        projectPath,
+        baseline,
+      });
+      output(readinessResult ?? result);
     } finally {
       server.bridge.disconnect();
     }
@@ -250,8 +303,13 @@ actions
   .description('获取当前可用行动列表')
   .action(async () => {
     const server = await createServer({ needGodotPath: false });
+    const projectPath = process.cwd();
+    const baseline = captureCommandLogBaseline(server, projectPath);
     try {
-      await run(() => handleGetActions(server));
+      output(await executeWithFailureDiagnostics(server, () => handleGetActions(server), {
+        projectPath,
+        baseline,
+      }));
     } finally {
       server.bridge.disconnect();
     }
@@ -263,13 +321,25 @@ actions
   .argument('<id>', '行动 ID')
   .action(async (id: string) => {
     const server = await createServer({ needGodotPath: false });
+    const projectPath = process.cwd();
+    const baseline = captureCommandLogBaseline(server, projectPath);
     try {
 
     // 记录执行前的 actions 快照
-    const beforeResult = await handleGetActions(server);
-    const beforeSnapshot = beforeResult.success ? JSON.stringify(beforeResult.data) : null;
+    const beforeResult = await executeWithFailureDiagnostics(server, () => handleGetActions(server), {
+      projectPath,
+      baseline,
+    });
+    if (!beforeResult.success) {
+      output(beforeResult);
+      return;
+    }
+    const beforeSnapshot = JSON.stringify(beforeResult.data);
 
-    const result = await handleRunAction(server, id);
+    const result = await executeWithFailureDiagnostics(server, () => handleRunAction(server, id), {
+      projectPath,
+      baseline,
+    });
     if (!result.success) {
       output(result);
       return;
@@ -279,23 +349,30 @@ actions
     const delays = [500, 1500, 3000];
     for (let i = 0; i < delays.length; i++) {
       await new Promise(r => setTimeout(r, delays[i]));
-      const listResult = await handleGetActions(server);
+      const listResult = await executeWithFailureDiagnostics(server, () => handleGetActions(server), {
+        projectPath,
+        baseline,
+      });
       if (!listResult.success) {
         // 连接失败等情况，继续重试
         if (i === delays.length - 1) { output(listResult); return; }
         continue;
       }
+      const diagnostic = collectFailureDiagnostics(server, {
+        projectPath,
+        baseline,
+      });
+      if (diagnostic && diagnostic.category !== 'warning') {
+        output(withFailureDiagnostics({ success: false, error: diagnostic.summary }, diagnostic));
+        return;
+      }
       const currentSnapshot = JSON.stringify(listResult.data);
       // 列表变化了 → 立即返回
-      if (currentSnapshot !== beforeSnapshot) {
+      if (currentSnapshot !== beforeSnapshot || i === delays.length - 1) {
         output(listResult);
         return;
       }
       // 最后一次重试仍未变化 → 直接返回（可能该 action 确实不改变列表）
-      if (i === delays.length - 1) {
-        output(listResult);
-        return;
-      }
     }
     } finally {
       server.bridge.disconnect();
