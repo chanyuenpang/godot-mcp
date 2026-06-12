@@ -730,7 +730,6 @@ export class GodotServer {
         mode,
       };
       writeFileSync(GodotServer.STATE_FILE, JSON.stringify(state, null, 2));
-      console.error(`[GodotServer] Wrote state file: PID=${pid}, port=${port}`);
     } catch (e) {
       console.error(`[GodotServer] Failed to write state file: ${e}`);
     }
