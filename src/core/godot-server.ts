@@ -5,12 +5,13 @@
 
 import { fileURLToPath } from 'url';
 import { join, dirname, basename, normalize } from 'path';
-import { existsSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { existsSync, readdirSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync, closeSync } from 'fs';
 import { spawn, execFile } from 'child_process';
 import type { StdioOptions } from 'child_process';
 import { promisify } from 'util';
 
-import type { GodotProcess, GodotServerConfig, OperationParams, LogEntry } from './types.js';
+import type { GodotProcess, GodotServerConfig, OperationParams, LogEntry, GodotDetachedState } from './types.js';
 import { InGameBridge } from './bridge.js';
 import { detectGodotPath, isValidGodotPath, isValidGodotPathSync, isGodot44OrLater } from './godot-path.js';
 
@@ -19,6 +20,8 @@ const execFileAsync = promisify(execFile);
 type GodotLaunchOptions = {
   detached?: boolean;
 };
+
+type GodotLaunchMode = 'editor' | 'run';
 
 // 调试模式常量
 const DEBUG_MODE: boolean = process.env.DEBUG === 'true';
@@ -33,6 +36,10 @@ const __dirname = dirname(__filename);
  * 不包含 MCP schema 注册和 handler 方法
  */
 export class GodotServer {
+  static readonly STATE_FILE = join(tmpdir(), '.godot-mcp-run.json');
+  static readonly LAST_RUN_SNAPSHOT_FILE = join(tmpdir(), '.godot-mcp-last-run.json');
+  static readonly LOG_DIR = join(tmpdir(), 'godot-mcp-logs');
+
   public activeProcess: GodotProcess | null = null;
   public godotPath: string | null = null;
   public bridge: InGameBridge = new InGameBridge();
@@ -305,29 +312,13 @@ export class GodotServer {
    */
   public launchEditor(projectPath: string, options: GodotLaunchOptions = {}): void {
     this.logDebug(`Launching Godot editor for project: ${projectPath}`);
-    const detached = options.detached === true;
-    const proc = spawn(this.godotPath!, ['-e', '--path', projectPath], {
-      detached,
-      stdio: detached ? 'ignore' : 'pipe',
-    });
-    proc.on('error', (err: Error) => {
-      console.error('Failed to start Godot editor:', err);
-    });
-    if (detached) {
-      proc.unref();
-    }
+    this.launchGodotProcess(projectPath, ['-e', '--path', projectPath], 'editor', options);
   }
 
   /**
    * 运行 Godot 项目（debug 模式）
    */
   public runProject(projectPath: string, scene?: string, options: GodotLaunchOptions = {}): void {
-    // 杀掉已有进程
-    if (this.activeProcess) {
-      this.logDebug('Killing existing Godot process before starting a new one');
-      this.activeProcess.process.kill();
-    }
-
     const cmdArgs = ['-d', '--path', projectPath];
     if (scene && this.validatePath(scene)) {
       this.logDebug(`Adding scene parameter: ${scene}`);
@@ -335,8 +326,38 @@ export class GodotServer {
     }
 
     this.logDebug(`Running Godot project: ${projectPath}`);
+    this.launchGodotProcess(projectPath, cmdArgs, 'run', options);
+  }
+
+  private launchGodotProcess(
+    projectPath: string,
+    cmdArgs: string[],
+    mode: GodotLaunchMode,
+    options: GodotLaunchOptions = {},
+  ): void {
+    // 杀掉已有进程
+    if (this.activeProcess) {
+      this.logDebug('Killing existing Godot process before starting a new one');
+      this.activeProcess.process.kill();
+    }
+
     const detached = options.detached === true;
-    const stdio: StdioOptions = detached ? 'ignore' : 'pipe';
+    let outputLogPath: string | undefined;
+    let errorLogPath: string | undefined;
+    let stdoutFd: number | undefined;
+    let stderrFd: number | undefined;
+    let stdio: StdioOptions = 'pipe';
+    if (detached) {
+      if (mode === 'run') {
+        GodotServer.clearLastRunSnapshot();
+      }
+      const logPaths = GodotServer.createDetachedLogPaths();
+      outputLogPath = logPaths.outputLogPath;
+      errorLogPath = logPaths.errorLogPath;
+      stdoutFd = openSync(outputLogPath, 'a');
+      stderrFd = openSync(errorLogPath, 'a');
+      stdio = ['ignore', stdoutFd, stderrFd];
+    }
     const proc = spawn(this.godotPath!, cmdArgs, { detached, stdio });
     const output: LogEntry[] = [];
     const errors: LogEntry[] = [];
@@ -371,20 +392,27 @@ export class GodotServer {
     });
 
     proc.on('error', (err: Error) => {
-      console.error('Failed to start Godot process:', err);
+      console.error(`Failed to start Godot ${mode}:`, err);
       if (this.activeProcess && this.activeProcess.process === proc) {
         this.activeProcess = null;
       }
     });
 
-    this.activeProcess = { process: proc, output, errors, startTime: Date.now() };
+    const startTime = Date.now();
+    this.activeProcess = { process: proc, output, errors, startTime, outputLogPath, errorLogPath, mode };
     if (detached) {
+      if (stdoutFd !== undefined) {
+        closeSync(stdoutFd);
+      }
+      if (stderrFd !== undefined) {
+        closeSync(stderrFd);
+      }
       proc.unref();
       // detached 模式下写入共享状态文件，供后续 CLI 命令发现进程
-      GodotServer.writeStateFile(projectPath, proc.pid ?? process.pid, 9090);
+      GodotServer.writeStateFile(projectPath, proc.pid ?? process.pid, 9090, outputLogPath, errorLogPath, startTime, mode);
     }
 
-    if (!detached) {
+    if (!detached && mode === 'run') {
       // 延迟 3 秒后尝试连接游戏内 WebSocket Server
       setTimeout(async () => {
         try {
@@ -402,15 +430,40 @@ export class GodotServer {
    * 停止当前运行的 Godot 进程
    */
   public stopProject(): { output: LogEntry[]; errors: LogEntry[] } | null {
-    if (!this.activeProcess) return null;
+    if (this.activeProcess) {
+      if (this.activeProcess.mode !== 'run') {
+        this.logDebug(`Refusing to stop active non-run process from stopProject: mode=${this.activeProcess.mode ?? 'unknown'}`);
+        return null;
+      }
+      this.logDebug('Stopping active Godot process');
+      this.activeProcess.process.kill();
+      const output = this.activeProcess.output;
+      const errors = this.activeProcess.errors;
+      this.activeProcess = null;
+      GodotServer.clearStateFile();
+      GodotServer.clearLastRunSnapshot();
+      this.bridge.disconnect();
+      return { output, errors };
+    }
 
-    this.logDebug('Stopping active Godot process');
-    this.activeProcess.process.kill();
-    const output = this.activeProcess.output;
-    const errors = this.activeProcess.errors;
-    this.activeProcess = null;
+    const detachedState = GodotServer.readStateFile();
+    if (!detachedState) return null;
+    if (detachedState.mode !== 'run') {
+      this.logDebug(`Refusing to stop detached non-run process from stopProject: mode=${detachedState.mode ?? 'unknown'}`);
+      return null;
+    }
+
+    try {
+      process.kill(detachedState.pid);
+    } catch {
+      GodotServer.clearStateFile();
+      return null;
+    }
+
+    GodotServer.clearStateFile();
+    GodotServer.clearLastRunSnapshot();
     this.bridge.disconnect();
-    return { output, errors };
+    return { output: [], errors: [] };
   }
 
   /**
@@ -506,18 +559,28 @@ export class GodotServer {
     // ─── 共享状态文件管理（detached 进程发现）────────────
 
   /** 共享状态文件路径 */
-  static readonly STATE_FILE = '/tmp/.godot-mcp-run.json';
 
   /**
    * 写入状态文件（detached 启动后调用）
    */
-  static writeStateFile(projectPath: string, pid: number, port: number = 9090): void {
+  static writeStateFile(
+    projectPath: string,
+    pid: number,
+    port: number = 9090,
+    outputLogPath?: string,
+    errorLogPath?: string,
+    startTime: number = Date.now(),
+    mode: GodotLaunchMode = 'run',
+  ): void {
     try {
-      const state = {
+      const state: GodotDetachedState = {
         pid,
         projectPath,
         port,
-        startTime: Date.now(),
+        startTime,
+        outputLogPath,
+        errorLogPath,
+        mode,
       };
       writeFileSync(GodotServer.STATE_FILE, JSON.stringify(state, null, 2));
       console.error(`[GodotServer] Wrote state file: PID=${pid}, port=${port}`);
@@ -529,12 +592,50 @@ export class GodotServer {
   /**
    * 清除状态文件
    */
-  static clearStateFile(): void {
+  static clearStateFile(options: { deleteLogs?: boolean } = {}): void {
+    const deleteLogs = options.deleteLogs !== false;
     try {
+      const state = GodotServer.readStateFile();
+      if (deleteLogs && state?.outputLogPath && existsSync(state.outputLogPath)) {
+        unlinkSync(state.outputLogPath);
+      }
+      if (deleteLogs && state?.errorLogPath && existsSync(state.errorLogPath)) {
+        unlinkSync(state.errorLogPath);
+      }
       if (existsSync(GodotServer.STATE_FILE)) {
         unlinkSync(GodotServer.STATE_FILE);
       }
     } catch { /* ignore */ }
+  }
+
+  static clearLastRunSnapshot(options: { deleteLogs?: boolean } = {}): void {
+    const deleteLogs = options.deleteLogs !== false;
+    try {
+      const state = GodotServer.readLastRunSnapshot();
+      if (deleteLogs && state?.outputLogPath && existsSync(state.outputLogPath)) {
+        unlinkSync(state.outputLogPath);
+      }
+      if (deleteLogs && state?.errorLogPath && existsSync(state.errorLogPath)) {
+        unlinkSync(state.errorLogPath);
+      }
+      if (existsSync(GodotServer.LAST_RUN_SNAPSHOT_FILE)) {
+        unlinkSync(GodotServer.LAST_RUN_SNAPSHOT_FILE);
+      }
+    } catch { /* ignore */ }
+  }
+
+  static archiveRunStateAsLastSnapshot(state: GodotDetachedState): void {
+    if (state.mode !== 'run') {
+      return;
+    }
+
+    try {
+      GodotServer.clearLastRunSnapshot();
+      writeFileSync(GodotServer.LAST_RUN_SNAPSHOT_FILE, JSON.stringify(state, null, 2));
+      console.error(`[GodotServer] Archived last failed run snapshot: PID=${state.pid}`);
+    } catch (e) {
+      console.error(`[GodotServer] Failed to archive last failed run snapshot: ${e}`);
+    }
   }
 
   /**
@@ -556,18 +657,23 @@ export class GodotServer {
     const state = GodotServer.readStateFile();
 
     if (state) {
-      const { pid, port } = state;
+      const { pid, port, mode } = state;
 
       // 2) 检查 PID 是否存活
       try {
         process.kill(pid, 0); // 信号 0 只检查存在性
       } catch {
         console.error(`[GodotServer] State file has dead PID=${pid}, cleaning up`);
-        GodotServer.clearStateFile();
+        if (mode === 'run') {
+          GodotServer.archiveRunStateAsLastSnapshot(state);
+          GodotServer.clearStateFile({ deleteLogs: false });
+        } else {
+          GodotServer.clearStateFile();
+        }
       }
 
-      // 3) 尝试连接 WebSocket
-      if (await tryConnect(`ws://127.0.0.1:${port}`, 3000)) {
+      // 3) 仅 run 模式尝试连接 WebSocket
+      if (mode !== 'editor' && await tryConnect(`ws://127.0.0.1:${port}`, 3000)) {
         return true;
       }
     }
@@ -579,7 +685,7 @@ export class GodotServer {
   /**
    * 读取共享状态文件
    */
-  private static readStateFile(): { pid: number; projectPath: string; port: number; startTime: number } | null {
+  static readStateFile(): GodotDetachedState | null {
     try {
       if (!existsSync(GodotServer.STATE_FILE)) return null;
       const raw = readFileSync(GodotServer.STATE_FILE, 'utf8');
@@ -587,6 +693,45 @@ export class GodotServer {
     } catch {
       return null;
     }
+  }
+
+  static readLastRunSnapshot(): GodotDetachedState | null {
+    try {
+      if (!existsSync(GodotServer.LAST_RUN_SNAPSHOT_FILE)) return null;
+      const raw = readFileSync(GodotServer.LAST_RUN_SNAPSHOT_FILE, 'utf8');
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  static createDetachedLogPaths(): { outputLogPath: string; errorLogPath: string } {
+    mkdirSync(GodotServer.LOG_DIR, { recursive: true });
+    const token = `${Date.now()}-${process.pid}`;
+    return {
+      outputLogPath: join(GodotServer.LOG_DIR, `${token}.stdout.log`),
+      errorLogPath: join(GodotServer.LOG_DIR, `${token}.stderr.log`),
+    };
+  }
+
+  static readDetachedLogs(state: GodotDetachedState): { output: LogEntry[]; errors: LogEntry[]; startTime: number } {
+    const toEntries = (filePath?: string): LogEntry[] => {
+      if (!filePath || !existsSync(filePath)) {
+        return [];
+      }
+      const raw = readFileSync(filePath, 'utf8');
+      const lines = raw.split(/\r?\n/).filter(line => line.trim().length > 0);
+      return lines.map((line, index) => ({
+        text: line,
+        timestamp: state.startTime + index,
+      }));
+    };
+
+    return {
+      output: toEntries(state.outputLogPath),
+      errors: toEntries(state.errorLogPath),
+      startTime: state.startTime,
+    };
   }
 
   public async cleanup(): Promise<void> {

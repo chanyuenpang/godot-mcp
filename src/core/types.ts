@@ -44,6 +44,19 @@ export interface GodotProcess {
   output: LogEntry[];
   errors: LogEntry[];
   startTime: number;
+  outputLogPath?: string;
+  errorLogPath?: string;
+  mode?: 'editor' | 'run';
+}
+
+export interface GodotDetachedState {
+  pid: number;
+  projectPath: string;
+  port: number;
+  startTime: number;
+  outputLogPath?: string;
+  errorLogPath?: string;
+  mode?: 'editor' | 'run';
 }
 
 /**

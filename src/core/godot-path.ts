@@ -113,7 +113,9 @@ export async function detectGodotPath(
       'C:\\Program Files (x86)\\Godot\\Godot.exe',
       'C:\\Program Files\\Godot_4\\Godot.exe',
       'C:\\Program Files (x86)\\Godot_4\\Godot.exe',
-      `${process.env.USERPROFILE}\\Godot\\Godot.exe`
+      `${process.env.USERPROFILE}\\Godot\\Godot.exe`,
+      `${process.env.USERPROFILE}\\Desktop\\Godot_v4.6.3.exe`,
+      'D:\\Users\\chany\\Desktop\\Godot_v4.6.3.exe'
     );
   } else if (osPlatform === 'linux') {
     possiblePaths.push(

@@ -78,7 +78,7 @@ const program = new Command();
 program
   .name('godot-mcp')
   .description('Godot MCP 命令行工具')
-  .version('0.1.1');
+  .version('0.1.2');
 
 // ─── 项目管理命令 ────────────────────────────────────────────
 
@@ -89,14 +89,18 @@ program
   .option('--scene <scene>', '指定运行的场景')
   .action(async (opts) => {
     const server = await createServer();
-    await run(() =>
-      handleRunProject(server, {
-        projectPath: resolve(opts.path),
-        scene: opts.scene,
-      }, {
-        detachProcess: true,
-      })
-    );
+    try {
+      await run(() =>
+        handleRunProject(server, {
+          projectPath: resolve(opts.path),
+          scene: opts.scene,
+        }, {
+          detachProcess: true,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 program
@@ -104,7 +108,11 @@ program
   .description('停止正在运行的 Godot 项目')
   .action(async () => {
     const server = await createServer();
-    await run(() => handleStopProject(server));
+    try {
+      await run(() => handleStopProject(server));
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 program
@@ -113,13 +121,17 @@ program
   .option('--path <dir>', '项目目录路径', '.')
   .action(async (opts) => {
     const server = await createServer();
-    await run(() =>
-      handleLaunchEditor(server, {
-        projectPath: resolve(opts.path),
-      }, {
-        detachProcess: true,
-      })
-    );
+    try {
+      await run(() =>
+        handleLaunchEditor(server, {
+          projectPath: resolve(opts.path),
+        }, {
+          detachProcess: true,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 program
@@ -127,7 +139,11 @@ program
   .description('获取 Godot 版本')
   .action(async () => {
     const server = await createServer();
-    await run(() => handleGetGodotVersion(server));
+    try {
+      await run(() => handleGetGodotVersion(server));
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 program
@@ -136,11 +152,15 @@ program
   .option('--path <dir>', '项目目录路径', '.')
   .action(async (opts) => {
     const server = await createServer();
-    await run(() =>
-      handleGetProjectInfo(server, {
-        projectPath: resolve(opts.path),
-      })
-    );
+    try {
+      await run(() =>
+        handleGetProjectInfo(server, {
+          projectPath: resolve(opts.path),
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 program
@@ -150,12 +170,16 @@ program
   .option('--recursive', '递归搜索', false)
   .action(async (opts) => {
     const server = await createServer();
-    await run(() =>
-      handleListProjects(server, {
-        directory: resolve(opts.dir),
-        recursive: opts.recursive,
-      })
-    );
+    try {
+      await run(() =>
+        handleListProjects(server, {
+          directory: resolve(opts.dir),
+          recursive: opts.recursive,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 // ─── 游戏内命令 ─────────────────────────────────────────────
@@ -221,7 +245,11 @@ actions
   .description('获取当前可用行动列表')
   .action(async () => {
     const server = await createServer({ needGodotPath: false });
-    await run(() => handleGetActions(server));
+    try {
+      await run(() => handleGetActions(server));
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 actions
@@ -230,6 +258,7 @@ actions
   .argument('<id>', '行动 ID')
   .action(async (id: string) => {
     const server = await createServer({ needGodotPath: false });
+    try {
 
     // 记录执行前的 actions 快照
     const beforeResult = await handleGetActions(server);
@@ -263,6 +292,9 @@ actions
         return;
       }
     }
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 // ─── 调试命令 ───────────────────────────────────────────────
@@ -275,13 +307,17 @@ program
   .option('--merge', '合并重复条目', true)
   .action(async (opts) => {
     const server = await createServer();
-    await run(() =>
-      handleGetDebugOutput(server, {
-        filter: opts.filter,
-        maxLines: parseInt(opts.maxLines, 10),
-        mergeDuplicates: opts.merge,
-      })
-    );
+    try {
+      await run(() =>
+        handleGetDebugOutput(server, {
+          filter: opts.filter,
+          maxLines: parseInt(opts.maxLines, 10),
+          mergeDuplicates: opts.merge,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 // ─── 资源命令 ───────────────────────────────────────────────
