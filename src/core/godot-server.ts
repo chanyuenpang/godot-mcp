@@ -11,9 +11,23 @@ import { spawn, execFile } from 'child_process';
 import type { StdioOptions } from 'child_process';
 import { promisify } from 'util';
 
-import type { GodotProcess, GodotServerConfig, OperationParams, LogEntry, GodotDetachedState } from './types.js';
+import type {
+  GodotProcess,
+  GodotServerConfig,
+  OperationParams,
+  LogEntry,
+  GodotDetachedState,
+  GodotEditorProcessInfo,
+} from './types.js';
 import { InGameBridge } from './bridge.js';
 import { detectGodotPath, isValidGodotPath, isValidGodotPathSync, isGodot44OrLater } from './godot-path.js';
+import {
+  ensureEditorPluginInstalled,
+  hasFreshEditorSession as hasFreshEditorSessionFile,
+  readEditorSession,
+  readEditorSessionLogs,
+  sendEditorCommand,
+} from './editor-integration.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -113,6 +127,63 @@ export class GodotServer {
   public logDebug(message: string): void {
     if (DEBUG_MODE) {
       console.error(`[DEBUG] ${message}`);
+    }
+  }
+
+  public ensureEditorPlugin(projectPath: string): { changed: boolean; pluginDir: string } {
+    return ensureEditorPluginInstalled(projectPath);
+  }
+
+  public hasFreshEditorSession(projectPath: string): boolean {
+    return hasFreshEditorSessionFile(projectPath);
+  }
+
+  public getEditorSession(projectPath: string) {
+    return readEditorSession(projectPath);
+  }
+
+  public async runProjectViaEditor(projectPath: string, scene?: string) {
+    return await sendEditorCommand(projectPath, scene ? { command: 'play_scene', scene } : { command: 'play_main' });
+  }
+
+  public async stopEditorPlay(projectPath: string) {
+    return await sendEditorCommand(projectPath, { command: 'stop_play' });
+  }
+
+  public getEditorSessionLogs(projectPath: string) {
+    if (!hasFreshEditorSessionFile(projectPath)) {
+      return null;
+    }
+    return readEditorSessionLogs(projectPath);
+  }
+
+  public async findProjectEditorProcesses(projectPath: string): Promise<GodotEditorProcessInfo[]> {
+    if (process.platform !== 'win32') {
+      return [];
+    }
+
+    const escapedProjectPath = projectPath.replace(/'/g, "''");
+    const script = [
+      `$projectPath = '${escapedProjectPath}'`,
+      "$procs = Get-CimInstance Win32_Process | Where-Object {",
+      "  $_.Name -match 'godot' -and",
+      "  $_.CommandLine -like '*--path*' -and",
+      "  $_.CommandLine -like ('*' + $projectPath + '*') -and",
+      "  ($_.CommandLine -like '* -e *' -or $_.CommandLine -like '* --editor *' -or $_.CommandLine -like '* -e' -or $_.CommandLine -like '* --editor')",
+      "} | Select-Object @{Name='pid';Expression={$_.ProcessId}}, @{Name='commandLine';Expression={$_.CommandLine}}",
+      "if ($procs) { $procs | ConvertTo-Json -Compress }",
+    ].join(' ');
+
+    try {
+      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', script]);
+      const raw = stdout.trim();
+      if (!raw) {
+        return [];
+      }
+      const parsed = JSON.parse(raw) as GodotEditorProcessInfo | GodotEditorProcessInfo[];
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return [];
     }
   }
 

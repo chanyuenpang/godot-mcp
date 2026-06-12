@@ -54,6 +54,7 @@ function truncateLogs(logs: LogEntry[], maxLines: number): LogEntry[] {
 
 export async function handleGetDebugOutput(server: GodotServer, args: any): Promise<ToolResult> {
   args = server.normalizeParameters(args);
+  const projectPath = args.projectPath || process.cwd();
 
   const filter = args.filter;
   if (!filter) {
@@ -62,14 +63,18 @@ export async function handleGetDebugOutput(server: GodotServer, args: any): Prom
 
   const mergeDuplicates = args.mergeDuplicates !== false;
   const maxLines = args.maxLines || 50;
+  const editorLogSource = server.getEditorSessionLogs(projectPath);
   const detachedState = GodotServer.readStateFile();
   const lastRunSnapshot = detachedState ? null : GodotServer.readLastRunSnapshot();
   const activeLogSource = server.activeProcess;
-  const logSource = activeLogSource
+  const logSource = editorLogSource
+    ?? activeLogSource
     ?? (detachedState ? GodotServer.readDetachedLogs(detachedState) : null)
     ?? (lastRunSnapshot ? GodotServer.readDetachedLogs(lastRunSnapshot) : null);
-  const source = activeLogSource
-    ? 'active_process'
+  const source = editorLogSource
+    ? 'editor_session_log'
+    : activeLogSource
+      ? 'active_process'
     : detachedState
       ? 'detached_state'
       : lastRunSnapshot

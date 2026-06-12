@@ -37,8 +37,42 @@ export async function handleLaunchEditor(server: GodotServer, args: any, options
     return { success: false, error: `Not a valid Godot project: ${args.projectPath}` };
   }
 
+  const pluginInstall = server.ensureEditorPlugin(args.projectPath);
+  if (server.hasFreshEditorSession(args.projectPath)) {
+    return {
+      success: true,
+      data: {
+        message: 'Attached to existing Godot editor session.',
+        mode: 'editor_session',
+        pluginChanged: pluginInstall.changed,
+        session: server.getEditorSession(args.projectPath),
+      },
+    };
+  }
+
+  const existingEditors = await server.findProjectEditorProcesses(args.projectPath);
+  if (existingEditors.length > 0) {
+    return {
+      success: false,
+      error: 'Detected an existing Godot editor for this project, but no fresh editor session is available yet. Wait for the plugin to refresh or restart the editor manually.',
+      data: {
+        mode: 'editor_process_without_session',
+        pluginChanged: pluginInstall.changed,
+        existingEditors,
+        staleSession: server.getEditorSession(args.projectPath),
+      },
+    };
+  }
+
   server.launchEditor(args.projectPath, { detached: options.detachProcess === true });
-  return { success: true, data: `Godot editor launched for project at ${args.projectPath}` };
+  return {
+    success: true,
+    data: {
+      message: `Godot editor launched for project at ${args.projectPath}`,
+      mode: 'launched_editor',
+      pluginChanged: pluginInstall.changed,
+    },
+  };
 }
 
 /**
@@ -60,18 +94,74 @@ export async function handleRunProject(server: GodotServer, args: any, options: 
     return { success: false, error: `Not a valid Godot project: ${args.projectPath}` };
   }
 
+  const pluginInstall = server.ensureEditorPlugin(args.projectPath);
+  if (server.hasFreshEditorSession(args.projectPath)) {
+    const response = await server.runProjectViaEditor(args.projectPath, args.scene);
+    if (!response.success) {
+      return { success: false, error: response.error || 'Editor run command failed.' };
+    }
+    return {
+      success: true,
+      data: {
+        message: 'Godot project started through attached editor session.',
+        mode: 'editor_session',
+        pluginChanged: pluginInstall.changed,
+        response,
+      },
+    };
+  }
+
+  const existingEditors = await server.findProjectEditorProcesses(args.projectPath);
+  if (existingEditors.length > 0) {
+    return {
+      success: false,
+      error: 'Detected an existing Godot editor for this project, but no fresh editor session is available yet. Refusing to launch a separate run process. Wait for the plugin to refresh or restart the editor manually.',
+      data: {
+        mode: 'editor_process_without_session',
+        pluginChanged: pluginInstall.changed,
+        existingEditors,
+        staleSession: server.getEditorSession(args.projectPath),
+      },
+    };
+  }
+
   if (!await server.ensureGodotPath()) {
     return { success: false, error: 'Could not find a valid Godot executable path' };
   }
 
   server.runProject(args.projectPath, args.scene, { detached: options.detachProcess === true });
-  return { success: true, data: 'Godot project started in debug mode. Use get_debug_output to see output.' };
+  return {
+    success: true,
+    data: {
+      message: 'Godot project started in debug mode. Use get_debug_output to see output.',
+      mode: 'detached_run',
+      pluginChanged: pluginInstall.changed,
+      note: pluginInstall.changed ? 'Editor plugin was installed. Restart an already-open editor to enable editor-session takeover.' : undefined,
+    },
+  };
 }
 
 /**
  * 停止 Godot 项目
  */
-export async function handleStopProject(server: GodotServer): Promise<ToolResult> {
+export async function handleStopProject(server: GodotServer, args: any = {}): Promise<ToolResult> {
+  args = server.normalizeParameters(args);
+  const projectPath = args.projectPath || process.cwd();
+  if (server.hasFreshEditorSession(projectPath)) {
+    const response = await server.stopEditorPlay(projectPath);
+    if (!response.success) {
+      return { success: false, error: response.error || 'Failed to stop editor play session.' };
+    }
+    return {
+      success: true,
+      data: {
+        message: 'Stopped play session in attached editor.',
+        mode: 'editor_session',
+        response,
+      },
+    };
+  }
+
   const result = server.stopProject();
   if (!result) {
     return { success: false, error: 'No active Godot process to stop.' };
@@ -82,6 +172,7 @@ export async function handleStopProject(server: GodotServer): Promise<ToolResult
       message: 'Godot project stopped',
       finalOutput: result.output,
       finalErrors: result.errors,
+      mode: 'detached_run',
     },
   };
 }

@@ -14,14 +14,21 @@ fs.chmodSync(path.join(__dirname, '..', 'build', 'cli.js'), '755');
 try {
   // Ensure the build/scripts directory exists
   fs.ensureDirSync(path.join(__dirname, '..', 'build', 'scripts'));
+  fs.ensureDirSync(path.join(__dirname, '..', 'build', 'editor-plugin'));
   
   // Copy the godot_operations.gd file
   fs.copyFileSync(
     path.join(__dirname, '..', 'src', 'scripts', 'godot_operations.gd'),
     path.join(__dirname, '..', 'build', 'scripts', 'godot_operations.gd')
   );
+
+  fs.copySync(
+    path.join(__dirname, '..', 'src', 'editor-plugin'),
+    path.join(__dirname, '..', 'build', 'editor-plugin'),
+    { overwrite: true }
+  );
   
-  console.log('Successfully copied godot_operations.gd to build/scripts');
+  console.log('Successfully copied build assets');
 } catch (error) {
   console.error('Error copying scripts:', error);
   process.exit(1);

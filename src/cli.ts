@@ -106,10 +106,15 @@ program
 program
   .command('stop')
   .description('停止正在运行的 Godot 项目')
-  .action(async () => {
+  .option('--path <dir>', '椤圭洰鐩綍璺緞', '.')
+  .action(async (opts) => {
     const server = await createServer();
     try {
-      await run(() => handleStopProject(server));
+      await run(() =>
+        handleStopProject(server, {
+          projectPath: resolve(opts?.path ?? '.'),
+        })
+      );
     } finally {
       server.bridge.disconnect();
     }

@@ -59,6 +59,45 @@ export interface GodotDetachedState {
   mode?: 'editor' | 'run';
 }
 
+export interface GodotEditorSession {
+  sessionId: string;
+  pluginVersion: string;
+  projectPath: string;
+  editorPid: number;
+  updatedAt: number;
+  isPlaying: boolean;
+  playingScene?: string;
+  logPath?: string;
+  commandPath?: string;
+  responsesDir?: string;
+  capabilities?: {
+    playMainScene?: boolean;
+    playCustomScene?: boolean;
+    stopPlay?: boolean;
+  };
+}
+
+export interface GodotEditorCommand {
+  id: string;
+  command: 'play_main' | 'play_scene' | 'stop_play';
+  scene?: string;
+  issuedAt: number;
+}
+
+export interface GodotEditorCommandResponse {
+  id: string;
+  success: boolean;
+  error?: string;
+  handledAt: number;
+  isPlaying?: boolean;
+  playingScene?: string;
+}
+
+export interface GodotEditorProcessInfo {
+  pid: number;
+  commandLine: string;
+}
+
 /**
  * 服务器配置
  */
