@@ -182,6 +182,28 @@ export async function sendEditorCommand(
   throw new Error(`Editor command timed out after ${timeoutMs}ms.`);
 }
 
+export async function readEditorOutputSnapshot(projectPath: string, timeoutMs: number = 3000): Promise<string[]> {
+  const response = await sendEditorCommand(projectPath, { command: 'get_output_snapshot' }, timeoutMs);
+  if (!response.success) {
+    throw new Error(response.error || 'Failed to read editor output snapshot.');
+  }
+  return Array.isArray(response.outputLines) ? response.outputLines : [];
+}
+
+export async function inspectEditorOutputTargets(projectPath: string, timeoutMs: number = 3000): Promise<Array<{
+  path: string;
+  name: string;
+  score: number;
+  lineCount: number;
+  sample: string;
+}>> {
+  const response = await sendEditorCommand(projectPath, { command: 'inspect_output_targets' }, timeoutMs);
+  if (!response.success) {
+    throw new Error(response.error || 'Failed to inspect editor output targets.');
+  }
+  return Array.isArray(response.targets) ? response.targets : [];
+}
+
 export function readEditorSessionLogs(projectPath: string): { output: LogEntry[]; errors: LogEntry[]; startTime: number } | null {
   const session = readEditorSession(projectPath);
   if (!session?.logPath || !existsSync(session.logPath)) {

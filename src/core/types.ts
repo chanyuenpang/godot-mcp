@@ -81,12 +81,13 @@ export interface GodotEditorSession {
     playMainScene?: boolean;
     playCustomScene?: boolean;
     stopPlay?: boolean;
+    readOutputSnapshot?: boolean;
   };
 }
 
 export interface GodotEditorCommand {
   id: string;
-  command: 'play_main' | 'play_scene' | 'stop_play';
+  command: 'play_main' | 'play_scene' | 'stop_play' | 'get_output_snapshot' | 'inspect_output_targets';
   scene?: string;
   issuedAt: number;
 }
@@ -98,11 +99,65 @@ export interface GodotEditorCommandResponse {
   handledAt: number;
   isPlaying?: boolean;
   playingScene?: string;
+  outputLines?: string[];
+  targets?: Array<{
+    path: string;
+    name: string;
+    score: number;
+    lineCount: number;
+    sample: string;
+  }>;
 }
 
 export interface GodotEditorProcessInfo {
   pid: number;
   commandLine: string;
+}
+
+export type GodotReadinessLevel =
+  | 'not_ready'
+  | 'editor_attached'
+  | 'bridge_connected'
+  | 'action_ready'
+  | 'world_ready';
+
+export type GodotReadinessCheckState = 'ready' | 'blocked' | 'unknown' | 'unchecked';
+
+export interface GodotReadiness {
+  projectPath: string;
+  level: GodotReadinessLevel;
+  summary: string;
+  modeHint: 'none' | 'editor_session' | 'editor_process_without_session' | 'detached_run' | 'active_run';
+  editor: {
+    attached: boolean;
+    staleSession: boolean;
+    processCount: number | null;
+    isPlaying: boolean | null;
+    playingScene: string | null;
+    updatedAt: number | null;
+  };
+  bridge: {
+    connected: boolean;
+    serverUrl: string;
+    connectedDurationMs: number | null;
+    gameRunning: boolean;
+  };
+  actions: {
+    state: GodotReadinessCheckState;
+    includeBlocked: boolean;
+    actionCount: number | null;
+    error?: string;
+  };
+  world: {
+    state: GodotReadinessCheckState;
+    reason: string;
+  };
+  process: {
+    activeRunProcess: boolean;
+    detachedRunState: boolean;
+    lastRunSnapshot: boolean;
+    preferredLogSource: GodotLogSourceSnapshot['source'] | 'none';
+  };
 }
 
 /**

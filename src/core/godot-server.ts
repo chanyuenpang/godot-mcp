@@ -25,6 +25,8 @@ import { detectGodotPath, isValidGodotPath, isValidGodotPathSync, isGodot44OrLat
 import {
   ensureEditorPluginInstalled,
   hasFreshEditorSession as hasFreshEditorSessionFile,
+  inspectEditorOutputTargets,
+  readEditorOutputSnapshot,
   readEditorSession,
   readEditorSessionLogs,
   sendEditorCommand,
@@ -149,6 +151,20 @@ export class GodotServer {
 
   public async stopEditorPlay(projectPath: string) {
     return await sendEditorCommand(projectPath, { command: 'stop_play' });
+  }
+
+  public async getEditorOutputSnapshot(projectPath: string, timeoutMs: number = 3000): Promise<string[]> {
+    return await readEditorOutputSnapshot(projectPath, timeoutMs);
+  }
+
+  public async inspectEditorOutputTargets(projectPath: string, timeoutMs: number = 3000): Promise<Array<{
+    path: string;
+    name: string;
+    score: number;
+    lineCount: number;
+    sample: string;
+  }>> {
+    return await inspectEditorOutputTargets(projectPath, timeoutMs);
   }
 
   public getEditorSessionLogs(projectPath: string) {

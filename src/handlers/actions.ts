@@ -4,10 +4,17 @@
  */
 
 import type { ToolResult } from '../core/types.js';
-import type { GodotServer } from '../core/godot-server.js';
+import { GodotServer } from '../core/godot-server.js';
+
+async function ensureBridgeConnected(server: GodotServer): Promise<boolean> {
+  if (server.bridge.isConnected()) {
+    return true;
+  }
+  return await GodotServer.tryConnectRunning(server.bridge);
+}
 
 export async function handleGetActions(server: GodotServer): Promise<ToolResult> {
-  if (!server.bridge.isConnected()) {
+  if (!await ensureBridgeConnected(server)) {
     return { success: false, error: '游戏未运行或 WebSocket 未连接。请先使用 run_project 启动游戏。' };
   }
   const result = await server.bridge.sendRequest('tools/call', {
@@ -19,9 +26,9 @@ export async function handleGetActions(server: GodotServer): Promise<ToolResult>
 
 export async function handleRunAction(server: GodotServer, actionId: string): Promise<ToolResult> {
   if (!actionId) {
-    return { success: false, error: 'action_id 参数是必需的' };
+    return { success: false, error: 'action_id 参数是必需的。' };
   }
-  if (!server.bridge.isConnected()) {
+  if (!await ensureBridgeConnected(server)) {
     return { success: false, error: '游戏未运行或 WebSocket 未连接。请先使用 run_project 启动游戏。' };
   }
   const result = await server.bridge.sendRequest('tools/call', {

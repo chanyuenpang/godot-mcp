@@ -9,8 +9,10 @@ import { resolve } from 'path';
 
 import type { ToolResult } from './core/types.js';
 import { GodotServer } from './core/godot-server.js';
+import { collectReadiness } from './core/readiness.js';
 import {
   captureCommandLogBaseline,
+  collectBestFailureDiagnostics,
   collectFailureDiagnostics,
   shouldDiagnoseError,
   waitForBridgeReadyOrDiagnose,
@@ -94,7 +96,7 @@ async function executeWithFailureDiagnostics(
       return result;
     }
 
-    const diagnostic = collectFailureDiagnostics(server, {
+    const diagnostic = await collectBestFailureDiagnostics(server, {
       projectPath: options.projectPath,
       baseline: options.baseline,
       transportError: result.error,
@@ -102,13 +104,36 @@ async function executeWithFailureDiagnostics(
     return withFailureDiagnostics(result, diagnostic);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    const diagnostic = collectFailureDiagnostics(server, {
+    const diagnostic = await collectBestFailureDiagnostics(server, {
       projectPath: options.projectPath,
       baseline: options.baseline,
       transportError: message,
     });
     return withFailureDiagnostics({ success: false, error: message }, diagnostic);
   }
+}
+
+async function attachReadiness(
+  server: GodotServer,
+  result: ToolResult,
+  options: {
+    projectPath: string;
+    probeActions?: boolean;
+    editorProcessCount?: number | null;
+  },
+): Promise<ToolResult> {
+  const readiness = await collectReadiness(server, {
+    projectPath: options.projectPath,
+    probeActions: options.probeActions,
+    editorProcessCount: options.editorProcessCount,
+  });
+  return {
+    ...result,
+    data: {
+      ...(result.data ?? {}),
+      readiness,
+    },
+  };
 }
 
 // 创建主命令
@@ -130,7 +155,8 @@ program
     const projectPath = resolve(opts.path);
     const baseline = captureCommandLogBaseline(server, projectPath);
     try {
-      const result = await executeWithFailureDiagnostics(server, () =>
+      const editorProcesses = await server.findProjectEditorProcesses(projectPath);
+      const initialResult = await executeWithFailureDiagnostics(server, () =>
         handleRunProject(server, {
           projectPath,
           scene: opts.scene,
@@ -141,6 +167,11 @@ program
           baseline,
         }
       );
+      const result = await attachReadiness(server, initialResult, {
+        projectPath,
+        probeActions: false,
+        editorProcessCount: editorProcesses.length,
+      });
       if (!result.success) {
         output(result);
         return;
@@ -150,7 +181,19 @@ program
         projectPath,
         baseline,
       });
-      output(readinessResult ?? result);
+      if (readinessResult) {
+        output(await attachReadiness(server, readinessResult, {
+          projectPath,
+          probeActions: false,
+          editorProcessCount: editorProcesses.length,
+        }));
+        return;
+      }
+      output(await attachReadiness(server, result, {
+        projectPath,
+        probeActions: true,
+        editorProcessCount: editorProcesses.length,
+      }));
     } finally {
       server.bridge.disconnect();
     }
@@ -246,25 +289,33 @@ const ingame = program.command('ingame').description('游戏内命令');
 
 ingame
   .command('exec')
-  .description('执行游戏内命令')
-  .requiredOption('--tool <name>', '工具名称')
-  .option('--args <json>', '参数 JSON 字符串', '{}')
+  .description('Execute an in-game tool command')
+  .requiredOption('--tool <name>', 'Tool name')
+  .option('--args <json>', 'Arguments JSON string', '{}')
   .action(async (opts) => {
     const server = await createServer({ needGodotPath: false });
+    const projectPath = process.cwd();
+    const baseline = captureCommandLogBaseline(server, projectPath);
     try {
       let args: any = {};
       try {
         args = JSON.parse(opts.args);
       } catch {
-        output({ success: false, error: `无效的 JSON 参数: ${opts.args}` });
+        output({ success: false, error: `Invalid JSON arguments: ${opts.args}` });
         return;
       }
-      await run(() =>
+      const result = await executeWithFailureDiagnostics(server, () =>
         handleIngameCommand(server, {
           tool_name: opts.tool,
           arguments: args,
-        })
-      );
+        }), {
+          projectPath,
+          baseline,
+        });
+      output(await attachReadiness(server, result, {
+        projectPath,
+        probeActions: server.bridge.isConnected(),
+      }));
     } finally {
       server.bridge.disconnect();
     }
@@ -272,11 +323,20 @@ ingame
 
 ingame
   .command('list')
-  .description('列出游戏内可用工具')
+  .description('List available in-game tools')
   .action(async () => {
     const server = await createServer({ needGodotPath: false });
+    const projectPath = process.cwd();
+    const baseline = captureCommandLogBaseline(server, projectPath);
     try {
-      await run(() => handleListIngameTools(server));
+      const result = await executeWithFailureDiagnostics(server, () => handleListIngameTools(server), {
+        projectPath,
+        baseline,
+      });
+      output(await attachReadiness(server, result, {
+        projectPath,
+        probeActions: server.bridge.isConnected(),
+      }));
     } finally {
       server.bridge.disconnect();
     }
@@ -306,9 +366,13 @@ actions
     const projectPath = process.cwd();
     const baseline = captureCommandLogBaseline(server, projectPath);
     try {
-      output(await executeWithFailureDiagnostics(server, () => handleGetActions(server), {
+      const result = await executeWithFailureDiagnostics(server, () => handleGetActions(server), {
         projectPath,
         baseline,
+      });
+      output(await attachReadiness(server, result, {
+        projectPath,
+        probeActions: server.bridge.isConnected(),
       }));
     } finally {
       server.bridge.disconnect();
@@ -331,7 +395,10 @@ actions
       baseline,
     });
     if (!beforeResult.success) {
-      output(beforeResult);
+      output(await attachReadiness(server, beforeResult, {
+        projectPath,
+        probeActions: server.bridge.isConnected(),
+      }));
       return;
     }
     const beforeSnapshot = JSON.stringify(beforeResult.data);
@@ -341,7 +408,10 @@ actions
       baseline,
     });
     if (!result.success) {
-      output(result);
+      output(await attachReadiness(server, result, {
+        projectPath,
+        probeActions: server.bridge.isConnected(),
+      }));
       return;
     }
 
@@ -355,7 +425,13 @@ actions
       });
       if (!listResult.success) {
         // 连接失败等情况，继续重试
-        if (i === delays.length - 1) { output(listResult); return; }
+        if (i === delays.length - 1) {
+          output(await attachReadiness(server, listResult, {
+            projectPath,
+            probeActions: server.bridge.isConnected(),
+          }));
+          return;
+        }
         continue;
       }
       const diagnostic = collectFailureDiagnostics(server, {
@@ -363,13 +439,19 @@ actions
         baseline,
       });
       if (diagnostic && diagnostic.category !== 'warning') {
-        output(withFailureDiagnostics({ success: false, error: diagnostic.summary }, diagnostic));
+        output(await attachReadiness(server, withFailureDiagnostics({ success: false, error: diagnostic.summary }, diagnostic), {
+          projectPath,
+          probeActions: server.bridge.isConnected(),
+        }));
         return;
       }
       const currentSnapshot = JSON.stringify(listResult.data);
       // 列表变化了 → 立即返回
       if (currentSnapshot !== beforeSnapshot || i === delays.length - 1) {
-        output(listResult);
+        output(await attachReadiness(server, listResult, {
+          projectPath,
+          probeActions: true,
+        }));
         return;
       }
       // 最后一次重试仍未变化 → 直接返回（可能该 action 确实不改变列表）
