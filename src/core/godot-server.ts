@@ -33,6 +33,7 @@ import {
 } from './editor-integration.js';
 
 const execFileAsync = promisify(execFile);
+const IGNORED_PROJECT_SCAN_DIR_NAMES = new Set(['tmp-smoke']);
 
 type GodotLaunchOptions = {
   detached?: boolean;
@@ -645,6 +646,7 @@ export class GodotServer {
         const entries = readdirSync(directory, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.isDirectory()) {
+            if (this.shouldSkipProjectScanDirectory(entry.name)) continue;
             const subdir = join(directory, entry.name);
             const subProjectFile = join(subdir, 'project.godot');
             if (existsSync(subProjectFile)) {
@@ -656,7 +658,7 @@ export class GodotServer {
         const entries = readdirSync(directory, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.isDirectory()) {
-            if (entry.name.startsWith('.')) continue;
+            if (this.shouldSkipProjectScanDirectory(entry.name)) continue;
             const subdir = join(directory, entry.name);
             const subProjectFile = join(subdir, 'project.godot');
             if (existsSync(subProjectFile)) {
@@ -673,6 +675,10 @@ export class GodotServer {
     }
 
     return projects;
+  }
+
+  private shouldSkipProjectScanDirectory(name: string): boolean {
+    return name.startsWith('.') || IGNORED_PROJECT_SCAN_DIR_NAMES.has(name);
   }
 
   /**
