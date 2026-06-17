@@ -21,7 +21,7 @@ type FailureCategory =
   | 'transport_error'
   | 'unknown_error';
 
-type FailureDiagnostic = {
+export type FailureDiagnostic = {
   category: FailureCategory;
   summary: string;
   priorityLogLines: string[];

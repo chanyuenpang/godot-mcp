@@ -18,6 +18,7 @@ import {
   waitForBridgeReadyOrDiagnose,
   withFailureDiagnostics,
 } from './core/failure-diagnostics.js';
+import { applySuccessResultDiagnostics } from './core/command-result-diagnostics.js';
 
 // Handlers
 import {
@@ -92,7 +93,15 @@ async function executeWithFailureDiagnostics(
 ): Promise<ToolResult> {
   try {
     const result = await handler();
-    if (result.success || !shouldDiagnoseError(result.error)) {
+    if (result.success) {
+      const diagnostic = collectFailureDiagnostics(server, {
+        projectPath: options.projectPath,
+        baseline: options.baseline,
+      });
+      return applySuccessResultDiagnostics(result, diagnostic);
+    }
+
+    if (!shouldDiagnoseError(result.error)) {
       return result;
     }
 
