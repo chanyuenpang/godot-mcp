@@ -6,6 +6,58 @@ import { GodotServer } from './godot-server.js';
 
 const execFileAsync = promisify(execFile);
 
+async function listCheckOnlyGodotPids(): Promise<number[]> {
+  if (process.platform === 'win32') {
+    try {
+      const { stdout = '' } = await execFileAsync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        '$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -like \'Godot*\' -and $_.CommandLine -like \'*--check-only*\' } | Select-Object -ExpandProperty ProcessId; $procs | ConvertTo-Json -Compress',
+      ], {
+        windowsHide: true,
+        timeout: 5000,
+      });
+      const text = stdout.trim();
+      if (!text) {
+        return [];
+      }
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        return parsed.map(value => Number(value)).filter(value => Number.isInteger(value) && value > 0);
+      }
+      const pid = Number(parsed);
+      return Number.isInteger(pid) && pid > 0 ? [pid] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+async function cleanupNewCheckOnlyGodotPids(beforePids: Set<number>): Promise<void> {
+  const currentPids = await listCheckOnlyGodotPids();
+  const leakedPids = currentPids.filter(pid => !beforePids.has(pid));
+  if (leakedPids.length === 0) {
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `Stop-Process -Id ${leakedPids.join(',')} -Force`,
+      ], {
+        windowsHide: true,
+        timeout: 5000,
+      });
+    } catch {
+      // 忽略清理失败，避免覆盖原始诊断结果。
+    }
+  }
+}
+
 type CommandLogBaseline = {
   capturedAt: number;
   source: GodotLogSourceSnapshot['source'] | 'none';
@@ -413,6 +465,7 @@ async function collectCompileProbeDiagnostic(
 
   const args = ['--headless', '--path', options.projectPath, '--check-only', '--quit'];
   let combined = '';
+  const beforePids = new Set(await listCheckOnlyGodotPids());
   try {
     const { stdout = '', stderr = '' } = await execFileAsync(server.godotPath, args, {
       timeout: 20000,
@@ -426,6 +479,8 @@ async function collectCompileProbeDiagnostic(
     } else {
       return null;
     }
+  } finally {
+    await cleanupNewCheckOnlyGodotPids(beforePids);
   }
 
   const entries = createLogEntriesFromText(combined);
