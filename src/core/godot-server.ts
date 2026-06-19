@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { join, dirname, basename, normalize } from 'path';
 import { tmpdir } from 'os';
 import { existsSync, readdirSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync, closeSync } from 'fs';
-import { spawn, execFile } from 'child_process';
+import { spawn, execFile, execFileSync } from 'child_process';
 import type { StdioOptions } from 'child_process';
 import { promisify } from 'util';
 
@@ -599,7 +599,7 @@ export class GodotServer {
         return null;
       }
       this.logDebug('Stopping active Godot process');
-      this.activeProcess.process.kill();
+      GodotServer.killProcessTree(this.activeProcess.process.pid);
       const output = this.activeProcess.output;
       const errors = this.activeProcess.errors;
       this.activeProcess = null;
@@ -617,7 +617,7 @@ export class GodotServer {
     }
 
     try {
-      process.kill(detachedState.pid);
+      GodotServer.killProcessTree(detachedState.pid);
     } catch {
       GodotServer.clearStateFile();
       return null;
@@ -902,10 +902,23 @@ export class GodotServer {
     this.logDebug('Cleaning up resources');
     if (this.activeProcess) {
       this.logDebug('Killing active Godot process');
-      this.activeProcess.process.kill();
+      GodotServer.killProcessTree(this.activeProcess.process.pid);
       this.activeProcess = null;
     }
     GodotServer.clearStateFile();
     this.bridge.disconnect();
+  }
+
+  private static killProcessTree(pid?: number | null): void {
+    if (!pid) {
+      return;
+    }
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+      });
+      return;
+    }
+    process.kill(pid);
   }
 }
