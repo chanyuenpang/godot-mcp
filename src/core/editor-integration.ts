@@ -169,17 +169,40 @@ export async function sendEditorCommand(
   }
   writeFileSync(commandPath, JSON.stringify(fullCommand, null, 2), 'utf8');
 
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(responsePath)) {
-      const response = JSON.parse(readFileSync(responsePath, 'utf8')) as GodotEditorCommandResponse;
-      unlinkSync(responsePath);
-      return response;
+  let completed = false;
+  try {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (existsSync(responsePath)) {
+        const response = JSON.parse(readFileSync(responsePath, 'utf8')) as GodotEditorCommandResponse;
+        unlinkSync(responsePath);
+        completed = true;
+        return response;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
+
+    throw new Error(`Editor command timed out after ${timeoutMs}ms.`);
+  } finally {
+    if (!completed) {
+      removeCommandFileIfCurrent(commandPath, id);
+    }
+  }
+}
+
+function removeCommandFileIfCurrent(commandPath: string, commandId: string): void {
+  if (!existsSync(commandPath)) {
+    return;
   }
 
-  throw new Error(`Editor command timed out after ${timeoutMs}ms.`);
+  try {
+    const currentCommand = JSON.parse(readFileSync(commandPath, 'utf8')) as Partial<GodotEditorCommand>;
+    if (currentCommand.id === commandId) {
+      unlinkSync(commandPath);
+    }
+  } catch {
+    // Keep unknown command files intact; the editor side owns invalid-file cleanup.
+  }
 }
 
 export async function readEditorOutputSnapshot(projectPath: string, timeoutMs: number = 3000): Promise<string[]> {

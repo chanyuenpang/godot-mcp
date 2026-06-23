@@ -5,6 +5,7 @@ const SESSION_FILE := "editor-session.json"
 const COMMAND_FILE := "command.json"
 const RESPONSES_DIR := "responses"
 const HEARTBEAT_INTERVAL_SECONDS := 0.5
+const COMMAND_MAX_AGE_SECONDS := 30.0
 const PLUGIN_VERSION := "0.1.2"
 const MAX_OUTPUT_LINES := 240
 
@@ -91,6 +92,10 @@ func _process_command() -> void:
   var command: Dictionary = parsed
   var command_id := String(command.get("id", ""))
   if command_id.is_empty() or command_id == _last_handled_command_id:
+    return
+  var command_age_seconds := Time.get_unix_time_from_system() - (float(command.get("issuedAt", 0)) / 1000.0)
+  if command_age_seconds > COMMAND_MAX_AGE_SECONDS:
+    DirAccess.remove_absolute(_command_path())
     return
 
   _last_handled_command_id = command_id
