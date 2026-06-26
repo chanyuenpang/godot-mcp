@@ -301,6 +301,7 @@ ingame
   .description('Execute an in-game tool command')
   .requiredOption('--tool <name>', 'Tool name')
   .option('--args <json>', 'Arguments JSON string', '{}')
+  .option('--timeout-ms <n>', 'Bridge request timeout in milliseconds', '10000')
   .action(async (opts) => {
     const server = await createServer({ needGodotPath: false });
     const projectPath = process.cwd();
@@ -317,6 +318,7 @@ ingame
         handleIngameCommand(server, {
           tool_name: opts.tool,
           arguments: args,
+          timeout_ms: parseInt(opts.timeoutMs, 10),
         }), {
           projectPath,
           baseline,

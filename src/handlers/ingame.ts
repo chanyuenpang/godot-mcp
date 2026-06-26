@@ -29,7 +29,7 @@ export async function handleIngameCommand(server: GodotServer, args: any): Promi
   const result = await server.bridge.sendRequest('tools/call', {
     name: args.tool_name,
     arguments: args.arguments ?? {},
-  });
+  }, Math.max(1000, parseInt(String(args.timeout_ms ?? 10000), 10) || 10000));
 
   return { success: true, data: result };
 }
