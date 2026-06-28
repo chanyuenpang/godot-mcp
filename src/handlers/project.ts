@@ -14,6 +14,11 @@ type LaunchHandlerOptions = {
   detachProcess?: boolean;
 };
 
+function shouldIgnoreEditorSessionGuards(): boolean {
+  const raw = String(process.env.GODOT_MCP_IGNORE_EDITOR_SESSION ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
 /**
  * 启动 Godot 编辑器
  */
@@ -38,7 +43,7 @@ export async function handleLaunchEditor(server: GodotServer, args: any, options
   }
 
   const pluginInstall = server.ensureEditorPlugin(args.projectPath);
-  if (server.hasFreshEditorSession(args.projectPath)) {
+  if (!shouldIgnoreEditorSessionGuards() && server.hasFreshEditorSession(args.projectPath)) {
     return {
       success: true,
       data: {
@@ -51,7 +56,7 @@ export async function handleLaunchEditor(server: GodotServer, args: any, options
   }
 
   const existingEditors = await server.findProjectEditorProcesses(args.projectPath);
-  if (existingEditors.length > 0) {
+  if (!shouldIgnoreEditorSessionGuards() && existingEditors.length > 0) {
     return {
       success: false,
       error: 'Detected an existing Godot editor for this project, but no fresh editor session is available yet. Wait for the plugin to refresh or restart the editor manually.',
@@ -95,7 +100,7 @@ export async function handleRunProject(server: GodotServer, args: any, options: 
   }
 
   const pluginInstall = server.ensureEditorPlugin(args.projectPath);
-  if (server.hasFreshEditorSession(args.projectPath)) {
+  if (!shouldIgnoreEditorSessionGuards() && server.hasFreshEditorSession(args.projectPath)) {
     const response = await server.runProjectViaEditor(args.projectPath, args.scene);
     if (!response.success) {
       return { success: false, error: response.error || 'Editor run command failed.' };
@@ -112,7 +117,7 @@ export async function handleRunProject(server: GodotServer, args: any, options: 
   }
 
   const existingEditors = await server.findProjectEditorProcesses(args.projectPath);
-  if (existingEditors.length > 0) {
+  if (!shouldIgnoreEditorSessionGuards() && existingEditors.length > 0) {
     return {
       success: false,
       error: 'Detected an existing Godot editor for this project, but no fresh editor session is available yet. Refusing to launch a separate run process. Wait for the plugin to refresh or restart the editor manually.',
@@ -147,7 +152,7 @@ export async function handleRunProject(server: GodotServer, args: any, options: 
 export async function handleStopProject(server: GodotServer, args: any = {}): Promise<ToolResult> {
   args = server.normalizeParameters(args);
   const projectPath = args.projectPath || process.cwd();
-  if (server.hasFreshEditorSession(projectPath)) {
+  if (!shouldIgnoreEditorSessionGuards() && server.hasFreshEditorSession(projectPath)) {
     const response = await server.stopEditorPlay(projectPath);
     if (!response.success) {
       return { success: false, error: response.error || 'Failed to stop editor play session.' };
