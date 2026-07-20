@@ -33,8 +33,6 @@ import {
 } from './editor-integration.js';
 
 const execFileAsync = promisify(execFile);
-const IGNORED_PROJECT_SCAN_DIR_NAMES = new Set(['tmp-smoke']);
-
 type GodotLaunchOptions = {
   detached?: boolean;
 };
@@ -678,7 +676,7 @@ export class GodotServer {
   }
 
   private shouldSkipProjectScanDirectory(name: string): boolean {
-    return name.startsWith('.') || IGNORED_PROJECT_SCAN_DIR_NAMES.has(name);
+    return name.startsWith('.');
   }
 
   /**
