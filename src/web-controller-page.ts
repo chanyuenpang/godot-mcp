@@ -11,7 +11,7 @@ export function getControllerPage(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Tiny World 控制器</title>
+<title>Godot MCP Actions</title>
 <style>
 * {
   margin: 0;
@@ -273,7 +273,7 @@ html, body {
 <div class="status-bar">
   <div class="status-dot connecting" id="statusDot"></div>
   <span class="status-text" id="statusText">连接中...</span>
-  <span class="status-title">Tiny World 控制器</span>
+  <span class="status-title">Godot MCP Actions</span>
   <button class="refresh-btn" id="refreshBtn" onclick="handleRefresh()" title="刷新行动列表">\ud83d\udd04</button>
 </div>
 
@@ -284,11 +284,6 @@ html, body {
     <div>等待游戏行动...</div>
   </div>
   <div id="actionsContainer" style="display:none;"></div>
-</div>
-
-<!-- 底部返回栏 -->
-<div class="bottom-bar" id="bottomBar">
-  <button class="back-btn" id="backBtn" onclick="handleBack()">← 返回</button>
 </div>
 
 <script>
@@ -384,41 +379,8 @@ function updateStatus(status) {
 function renderActions() {
   var container = document.getElementById("actionsContainer");
   var emptyState = document.getElementById("emptyState");
-  var bottomBar = document.getElementById("bottomBar");
 
-  // 过滤特殊行动
-  var hasBack = false;
-  var hasRetry = false;
-  var normalActions = [];
-
-  for (var i = 0; i < state.actions.length; i++) {
-    var action = state.actions[i];
-    if (action.id === "nav_back") {
-      hasBack = true;
-    } else if (action.id === "retry") {
-      hasRetry = true;
-    } else {
-      normalActions.push(action);
-    }
-  }
-
-  // 处理 retry：自动静默执行
-  if (hasRetry) {
-    container.style.display = "none";
-    emptyState.style.display = "none";
-    // 显示等待提示
-    container.style.display = "block";
-    container.innerHTML = '<div class="waiting-hint">\\u23f3 等待游戏响应...</div>';
-    bottomBar.className = "bottom-bar" + (hasBack ? " visible" : "");
-    // 静默执行 retry
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.send(JSON.stringify({ type: "run_action", action_id: "retry" }));
-    }
-    return;
-  }
-
-  // 处理返回按钮
-  bottomBar.className = "bottom-bar" + (hasBack ? " visible" : "");
+  var normalActions = state.actions;
 
   // 无行动时显示空状态
   if (normalActions.length === 0) {
@@ -453,7 +415,8 @@ function renderActions() {
     for (var m = 0; m < items.length; m++) {
       var item = items[m];
       var fullWidthClass = items.length === 1 ? " full-width" : "";
-      html += '<button class="action-btn' + fullWidthClass + '" data-id="' + escapeAttr(item.id) + '" onclick="handleAction(this)">';
+      var disabledAttr = item.enabled === false ? " disabled" : "";
+      html += '<button class="action-btn' + fullWidthClass + '" data-id="' + escapeAttr(item.id) + '" onclick="handleAction(this)"' + disabledAttr + '>';
       html += escapeHtml(item.label);
       html += "</button>";
     }
@@ -481,25 +444,6 @@ function handleAction(btn) {
 
   // 发送执行命令
   state.ws.send(JSON.stringify({ type: "run_action", action_id: actionId }));
-}
-
-// ===== 返回按钮处理 =====
-function handleBack() {
-  var backBtn = document.getElementById("backBtn");
-  if (state.isExecuting) return;
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-
-  state.isExecuting = true;
-  backBtn.disabled = true;
-  document.getElementById("refreshBtn").disabled = true;
-
-  // 同时禁用所有行动按钮
-  var allBtns = document.querySelectorAll(".action-btn");
-  for (var i = 0; i < allBtns.length; i++) {
-    allBtns[i].disabled = true;
-  }
-
-  state.ws.send(JSON.stringify({ type: "run_action", action_id: "nav_back" }));
 }
 
 // ===== 显示错误 =====

@@ -19,6 +19,7 @@ import {
   withFailureDiagnostics,
 } from './core/failure-diagnostics.js';
 import { applySuccessResultDiagnostics } from './core/command-result-diagnostics.js';
+import { ensureIngameAddonInstalled } from './core/ingame-addon.js';
 
 // Handlers
 import {
@@ -29,7 +30,13 @@ import {
   handleGetProjectInfo,
   handleListProjects,
 } from './handlers/project.js';
-import { handleCreateScene, handleAddNode } from './handlers/scene.js';
+import {
+  handleCreateScene,
+  handleAddNode,
+  handleLoadSprite,
+  handleSaveScene,
+  handleExportMeshLibrary,
+} from './handlers/scene.js';
 import {
   handleReadResource,
   handleEditResource,
@@ -42,7 +49,7 @@ import {
   handleListIngameTools,
   handleGetIngameStatus,
 } from './handlers/ingame.js';
-import { handleGetActions, handleRunAction } from './handlers/actions.js';
+import { handleGetActions, handleRunActionAndWait } from './handlers/actions.js';
 
 /**
  * 输出 JSON 结果到 stdout 并退出
@@ -297,6 +304,19 @@ program
 const ingame = program.command('ingame').description('游戏内命令');
 
 ingame
+  .command('install')
+  .description('把通用 Godot MCP ingame addon 安装到项目并注册 autoload')
+  .option('--path <dir>', '项目目录路径', '.')
+  .action((opts) => {
+    try {
+      const result = ensureIngameAddonInstalled(resolve(opts.path));
+      output({ success: true, data: result });
+    } catch (error: unknown) {
+      output({ success: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+ingame
   .command('exec')
   .description('Execute an in-game tool command')
   .requiredOption('--tool <name>', 'Tool name')
@@ -392,57 +412,36 @@ actions
   .command('run')
   .description('执行指定行动（成功后自动等待状态更新并返回下一步可用行动）')
   .argument('<id>', '行动 ID')
-  .action(async (id: string) => {
+  .option('--args <json>', 'Action 参数 JSON', '{}')
+  .action(async (id: string, opts) => {
     const server = await createServer({ needGodotPath: false });
     const projectPath = process.cwd();
     const baseline = captureCommandLogBaseline(server, projectPath);
     try {
+      let actionArguments: Record<string, unknown>;
+      try {
+        actionArguments = JSON.parse(opts.args);
+        if (!actionArguments || Array.isArray(actionArguments) || typeof actionArguments !== 'object') {
+          throw new Error('Action arguments must be a JSON object.');
+        }
+      } catch (error: unknown) {
+        output({ success: false, error: error instanceof Error ? error.message : `Invalid JSON arguments: ${opts.args}` });
+        return;
+      }
 
-    // 记录执行前的 actions 快照
-    const beforeResult = await executeWithFailureDiagnostics(server, () => handleGetActions(server), {
-      projectPath,
-      baseline,
-    });
-    if (!beforeResult.success) {
-      output(await attachReadiness(server, beforeResult, {
-        projectPath,
-        probeActions: server.bridge.isConnected(),
-      }));
-      return;
-    }
-    const beforeSnapshot = JSON.stringify(beforeResult.data);
-
-    const result = await executeWithFailureDiagnostics(server, () => handleRunAction(server, id), {
-      projectPath,
-      baseline,
-    });
-    if (!result.success) {
-      output(await attachReadiness(server, result, {
-        projectPath,
-        probeActions: server.bridge.isConnected(),
-      }));
-      return;
-    }
-
-    // 渐进等待：如果列表未变化则认为游戏仍在加载
-    const delays = [500, 1500, 3000];
-    for (let i = 0; i < delays.length; i++) {
-      await new Promise(r => setTimeout(r, delays[i]));
-      const listResult = await executeWithFailureDiagnostics(server, () => handleGetActions(server), {
+      const result = await executeWithFailureDiagnostics(server, () =>
+        handleRunActionAndWait(server, id, actionArguments), {
         projectPath,
         baseline,
       });
-      if (!listResult.success) {
-        // 连接失败等情况，继续重试
-        if (i === delays.length - 1) {
-          output(await attachReadiness(server, listResult, {
-            projectPath,
-            probeActions: server.bridge.isConnected(),
-          }));
-          return;
-        }
-        continue;
+      if (!result.success) {
+        output(await attachReadiness(server, result, {
+          projectPath,
+          probeActions: server.bridge.isConnected(),
+        }));
+        return;
       }
+
       const diagnostic = collectFailureDiagnostics(server, {
         projectPath,
         baseline,
@@ -454,17 +453,11 @@ actions
         }));
         return;
       }
-      const currentSnapshot = JSON.stringify(listResult.data);
-      // 列表变化了 → 立即返回
-      if (currentSnapshot !== beforeSnapshot || i === delays.length - 1) {
-        output(await attachReadiness(server, listResult, {
-          projectPath,
-          probeActions: true,
-        }));
-        return;
-      }
-      // 最后一次重试仍未变化 → 直接返回（可能该 action 确实不改变列表）
-    }
+
+      output(await attachReadiness(server, result, {
+        projectPath,
+        probeActions: true,
+      }));
     } finally {
       server.bridge.disconnect();
     }
@@ -550,13 +543,17 @@ scene
   .option('--project <dir>', '项目目录', '.')
   .action(async (opts) => {
     const server = await createServer();
-    await run(() =>
-      handleCreateScene(server, {
-        projectPath: resolve(opts.project),
-        scenePath: opts.path,
-        rootNodeType: opts.root,
-      })
-    );
+    try {
+      await run(() =>
+        handleCreateScene(server, {
+          projectPath: resolve(opts.project),
+          scenePath: opts.path,
+          rootNodeType: opts.root,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 scene
@@ -569,15 +566,86 @@ scene
   .option('--project <dir>', '项目目录', '.')
   .action(async (opts) => {
     const server = await createServer();
-    await run(() =>
-      handleAddNode(server, {
-        projectPath: resolve(opts.project),
-        scenePath: opts.scene,
-        nodeType: opts.type,
-        nodeName: opts.name,
-        parentNodePath: opts.parent,
-      })
-    );
+    try {
+      await run(() =>
+        handleAddNode(server, {
+          projectPath: resolve(opts.project),
+          scenePath: opts.scene,
+          nodeType: opts.type,
+          nodeName: opts.name,
+          parentNodePath: opts.parent,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
+  });
+
+scene
+  .command('load-sprite')
+  .description('为 Sprite2D 节点加载纹理')
+  .requiredOption('--scene <file>', '场景文件路径')
+  .requiredOption('--node <path>', 'Sprite2D 节点路径')
+  .requiredOption('--texture <file>', '纹理文件路径')
+  .option('--project <dir>', '项目目录', '.')
+  .action(async (opts) => {
+    const server = await createServer();
+    try {
+      await run(() =>
+        handleLoadSprite(server, {
+          projectPath: resolve(opts.project),
+          scenePath: opts.scene,
+          nodePath: opts.node,
+          texturePath: opts.texture,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
+  });
+
+scene
+  .command('save')
+  .description('保存场景或另存为新场景')
+  .requiredOption('--scene <file>', '场景文件路径')
+  .option('--new-path <file>', '另存为的场景路径')
+  .option('--project <dir>', '项目目录', '.')
+  .action(async (opts) => {
+    const server = await createServer();
+    try {
+      await run(() =>
+        handleSaveScene(server, {
+          projectPath: resolve(opts.project),
+          scenePath: opts.scene,
+          newPath: opts.newPath,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
+  });
+
+scene
+  .command('export-mesh-library')
+  .description('把场景导出为 MeshLibrary 资源')
+  .requiredOption('--scene <file>', '待导出的场景文件路径')
+  .requiredOption('--output <file>', 'MeshLibrary 输出路径')
+  .option('--items <names...>', '仅导出指定名称的 mesh item')
+  .option('--project <dir>', '项目目录', '.')
+  .action(async (opts) => {
+    const server = await createServer();
+    try {
+      await run(() =>
+        handleExportMeshLibrary(server, {
+          projectPath: resolve(opts.project),
+          scenePath: opts.scene,
+          outputPath: opts.output,
+          meshItemNames: opts.items,
+        })
+      );
+    } finally {
+      server.bridge.disconnect();
+    }
   });
 
 // ─── UID 命令 ───────────────────────────────────────────────
@@ -645,16 +713,6 @@ program
       console.error(`启动失败: ${message}`);
       process.exit(1);
     }
-  });
-
-// ─── serve 命令（MCP stdio 模式）─────────────────────────────
-
-program
-  .command('serve')
-  .description('启动 MCP stdio 服务（常驻模式）')
-  .action(async () => {
-    // 动态导入 index.ts 中的 MCP 启动逻辑
-    await import('./index.js');
   });
 
 // 解析命令行参数

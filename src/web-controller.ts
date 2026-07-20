@@ -7,6 +7,7 @@ import * as http from 'http';
 import * as os from 'os';
 import { WebSocketServer, WebSocket } from 'ws';
 import { InGameBridge } from './core/bridge.js';
+import { ACTIONS_LIST_TOOL, ACTIONS_RUN_TOOL, parseActionListResponse } from './core/action-protocol.js';
 import { getControllerPage } from './web-controller-page.js';
 
 /** 浏览器 WebSocket 消息类型 */
@@ -199,8 +200,8 @@ export class WebController {
 
     try {
       const result = await this.bridge.sendRequest('tools/call', {
-        name: 'get_available_actions',
-        arguments: {},
+        name: ACTIONS_LIST_TOOL,
+        arguments: { context: {} },
       });
 
       const actions = this.extractActions(result);
@@ -229,15 +230,15 @@ export class WebController {
     try {
       // 1. 先获取当前 actions 作为对比基准
       const beforeResult = await this.bridge.sendRequest('tools/call', {
-        name: 'get_available_actions',
-        arguments: {},
+        name: ACTIONS_LIST_TOOL,
+        arguments: { context: {} },
       });
       const beforeIds = this.extractActionIds(beforeResult);
 
       // 2. 执行行动
       await this.bridge.sendRequest('tools/call', {
-        name: 'execute_action',
-        arguments: { action_id: actionId },
+        name: ACTIONS_RUN_TOOL,
+        arguments: { action_id: actionId, arguments: {} },
       });
 
       // 3. 轮询等待 actions 变化（最多 5 秒，每 500ms 检查一次）
@@ -251,8 +252,8 @@ export class WebController {
         elapsed += interval;
 
         const result = await this.bridge.sendRequest('tools/call', {
-          name: 'get_available_actions',
-          arguments: {},
+          name: ACTIONS_LIST_TOOL,
+          arguments: { context: {} },
         });
         actions = this.extractActions(result);
         const currentIds = this.extractActionIds(result);
@@ -266,8 +267,8 @@ export class WebController {
       // 超时后 actions 仍未变化，也返回当前列表
       if (actions.length === 0) {
         const result = await this.bridge.sendRequest('tools/call', {
-          name: 'get_available_actions',
-          arguments: {},
+          name: ACTIONS_LIST_TOOL,
+          arguments: { context: {} },
         });
         actions = this.extractActions(result);
       }
@@ -296,32 +297,7 @@ export class WebController {
    * 从 bridge 返回结果中提取行动列表
    */
   private extractActions(result: any): any[] {
-    // bridge 返回的是 MCP tool call 的结果
-    // 通常格式为 { content: [{ type: "text", text: "..." }] }
-    if (!result) return [];
-
-    if (result.content && Array.isArray(result.content)) {
-      for (const item of result.content) {
-        if (item.type === 'text' && item.text) {
-          try {
-            const parsed = JSON.parse(item.text);
-            if (Array.isArray(parsed)) return parsed;
-            if (parsed.actions && Array.isArray(parsed.actions)) return parsed.actions;
-            return [parsed];
-          } catch {
-            // 非 JSON 文本，跳过
-          }
-        }
-      }
-    }
-
-    // 如果结果本身就是数组
-    if (Array.isArray(result)) return result;
-
-    // 如果有 actions 字段
-    if (result.actions && Array.isArray(result.actions)) return result.actions;
-
-    return [];
+    return parseActionListResponse(result).actions;
   }
 
   /**
@@ -342,7 +318,7 @@ export class WebController {
     const localIPs = getLocalIPs();
 
     console.log('');
-    console.log('🎮 Tiny World 手机控制器已启动！');
+    console.log('🎮 Godot MCP Actions 控制器已启动！');
     console.log(`本机访问: http://localhost:${this.port}`);
     for (const ip of localIPs) {
       console.log(`手机访问: http://${ip}:${this.port}`);

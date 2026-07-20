@@ -1,21 +1,21 @@
 {
   "name": "godot-mcp",
   "version": "0.1.2",
-  "description": "MCP server for interfacing with Godot game engine. Provides tools for launching the editor, running projects, and capturing debug output.",
+  "description": "CLI for launching, inspecting, automating, and testing Godot projects.",
   "keywords": [
     "godot",
     "mcp",
-    "ai",
-    "claude",
-    "cline"
+    "cli",
+    "automation",
+    "testing"
   ],
-  "homepage": "https://github.com/Coding-Solo/godot-mcp",
+  "homepage": "https://github.com/chanyuenpang/godot-mcp#readme",
   "bugs": {
-    "url": "https://github.com/Coding-Solo/godot-mcp/issues"
+    "url": "https://github.com/chanyuenpang/godot-mcp/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Coding-Solo/godot-mcp.git"
+    "url": "git+https://github.com/chanyuenpang/godot-mcp.git"
   },
   "license": "MIT",
   "author": "Solomon Elias <solomon@sippy.ai>",
@@ -27,13 +27,14 @@
     "build"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build.js",
-    "inspector": "npx @modelcontextprotocol/inspector build/index.js",
+    "clean": "node scripts/clean.js",
+    "build": "npm run clean && tsc && node scripts/build.js",
+    "test": "npm run build && node --test build/tests/*.test.js",
+    "test:ingame-addon": "npm run build && node scripts/validate-ingame-addon.js",
     "prepare": "npm run build",
     "watch": "tsc --watch"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "0.6.0",
     "axios": "^1.7.9",
     "commander": "^14.0.3",
     "fs-extra": "^11.2.0",

@@ -7,7 +7,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // 为构建产物设置可执行权限
-fs.chmodSync(path.join(__dirname, '..', 'build', 'index.js'), '755');
 fs.chmodSync(path.join(__dirname, '..', 'build', 'cli.js'), '755');
 
 // Copy the scripts directory to the build directory
@@ -15,6 +14,7 @@ try {
   // Ensure the build/scripts directory exists
   fs.ensureDirSync(path.join(__dirname, '..', 'build', 'scripts'));
   fs.ensureDirSync(path.join(__dirname, '..', 'build', 'editor-plugin'));
+  fs.ensureDirSync(path.join(__dirname, '..', 'build', 'ingame-addon'));
   
   // Copy the godot_operations.gd file
   fs.copyFileSync(
@@ -25,6 +25,12 @@ try {
   fs.copySync(
     path.join(__dirname, '..', 'src', 'editor-plugin'),
     path.join(__dirname, '..', 'build', 'editor-plugin'),
+    { overwrite: true }
+  );
+
+  fs.copySync(
+    path.join(__dirname, '..', 'src', 'ingame-addon'),
+    path.join(__dirname, '..', 'build', 'ingame-addon'),
     { overwrite: true }
   );
   
