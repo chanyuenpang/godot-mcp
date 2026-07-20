@@ -176,11 +176,3 @@ export interface GodotServerConfig {
 export interface OperationParams {
   [key: string]: any;
 }
-
-/**
- * MCP 内容响应格式
- */
-export interface MCPContent {
-  content: Array<{ type: string; text: string }>;
-  isError?: boolean;
-}

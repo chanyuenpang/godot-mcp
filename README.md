@@ -1,246 +1,136 @@
-# Godot MCP
+# Godot MCP CLI
 
-[![Github-sponsors](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/Coding-Solo)
+`godot-mcp` 是面向 Godot 4 项目的命令行自动化工具。CLI 是唯一公开入口，用于启动和停止项目、读取诊断、编辑资源与场景，以及通过游戏内 addon 执行通用 actions。
 
-[![](https://badge.mcpx.dev?type=server 'MCP Server')](https://modelcontextprotocol.io/introduction)
-[![Made with Godot](https://img.shields.io/badge/Made%20with-Godot-478CBF?style=flat&logo=godot%20engine&logoColor=white)](https://godotengine.org)
-[![](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white 'Node.js')](https://nodejs.org/en/download/)
-[![](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white 'TypeScript')](https://www.typescriptlang.org/)
+项目不再提供面向 Claude、Cursor 或其他客户端的 stdio MCP server。名称中的 `MCP` 作为项目和协议兼容标识保留；Godot addon 内部仍使用 JSON-RPC 2.0 与 MCP `tools/list` / `tools/call`，使用 CLI 的调用方不需要适配 MCP 客户端。
 
-[![](https://img.shields.io/github/last-commit/Coding-Solo/godot-mcp 'Last Commit')](https://github.com/Coding-Solo/godot-mcp/commits/main)
-[![](https://img.shields.io/github/stars/Coding-Solo/godot-mcp 'Stars')](https://github.com/Coding-Solo/godot-mcp/stargazers)
-[![](https://img.shields.io/github/forks/Coding-Solo/godot-mcp 'Forks')](https://github.com/Coding-Solo/godot-mcp/network/members)
-[![](https://img.shields.io/badge/License-MIT-red.svg 'MIT License')](https://opensource.org/licenses/MIT)
+## 环境要求
 
+- Godot 4
+- Node.js 18 或更高版本
+- npm
 
-```text
-                           (((((((             (((((((
-                        (((((((((((           (((((((((((
-                        (((((((((((((       (((((((((((((
-                        (((((((((((((((((((((((((((((((((
-                        (((((((((((((((((((((((((((((((((
-         (((((      (((((((((((((((((((((((((((((((((((((((((      (((((
-       (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-     ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-    ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-      (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-        (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         (((((((((((@@@@@@@(((((((((((((((((((((((((((@@@@@@@(((((((((((
-         (((((((((@@@@,,,,,@@@(((((((((((((((((((((@@@,,,,,@@@@(((((((((
-         ((((((((@@@,,,,,,,,,@@(((((((@@@@@(((((((@@,,,,,,,,,@@@((((((((
-         ((((((((@@@,,,,,,,,,@@(((((((@@@@@(((((((@@,,,,,,,,,@@@((((((((
-         (((((((((@@@,,,,,,,@@((((((((@@@@@((((((((@@,,,,,,,@@@(((((((((
-         ((((((((((((@@@@@@(((((((((((@@@@@(((((((((((@@@@@@((((((((((((
-         (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         @@@@@@@@@@@@@((((((((((((@@@@@@@@@@@@@((((((((((((@@@@@@@@@@@@@
-         ((((((((( @@@(((((((((((@@(((((((((((@@(((((((((((@@@ (((((((((
-         (((((((((( @@((((((((((@@@(((((((((((@@@((((((((((@@ ((((((((((
-          (((((((((((@@@@@@@@@@@@@@(((((((((((@@@@@@@@@@@@@@(((((((((((
-           (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-              (((((((((((((((((((((((((((((((((((((((((((((((((((((
-                 (((((((((((((((((((((((((((((((((((((((((((((((
-                        (((((((((((((((((((((((((((((((((
+可通过 `GODOT_PATH` 指定 Godot 可执行文件；未指定时 CLI 会尝试自动发现。
 
-
-                          /$$      /$$  /$$$$$$  /$$$$$$$
-                         | $$$    /$$$ /$$__  $$| $$__  $$
-                         | $$$$  /$$$$| $$  \__/| $$  \ $$
-                         | $$ $$/$$ $$| $$      | $$$$$$$/
-                         | $$  $$$| $$| $$      | $$____/
-                         | $$\  $ | $$| $$    $$| $$
-                         | $$ \/  | $$|  $$$$$$/| $$
-                         |__/     |__/ \______/ |__/
-```
-
-A Model Context Protocol (MCP) server for interacting with the Godot game engine.
-
-## Introduction
-
-Godot MCP enables AI agents to launch the Godot editor, run projects, capture debug output, and control project execution. This direct feedback loop helps agents understand what works and what doesn't in real Godot projects, leading to better code generation and debugging assistance.
-
-## Features
-
-- **Launch Godot Editor**: Open the Godot editor for a specific project
-- **Run Godot Projects**: Execute Godot projects in debug mode
-- **Capture Debug Output**: Retrieve console output and error messages
-- **Control Execution**: Start and stop Godot projects programmatically
-- **Get Godot Version**: Retrieve the installed Godot version
-- **List Godot Projects**: Find Godot projects in a specified directory
-- **Project Analysis**: Get detailed information about project structure
-- **Scene Management**:
-  - Create new scenes with specified root node types
-  - Add nodes to existing scenes with customizable properties
-  - Load sprites and textures into Sprite2D nodes
-  - Export 3D scenes as MeshLibrary resources for GridMap
-  - Save scenes with options for creating variants
-- **UID Management** (for Godot 4.4+):
-  - Get UID for specific files
-  - Update UID references by resaving resources
-
-## Requirements
-
-- [Godot Engine](https://godotengine.org/download) installed on your system
-- Node.js (>=18.0.0) and npm
-- An AI agent that supports MCP
-
-## Quick Start
-
-### Claude Code
+## 安装
 
 ```bash
-claude mcp add godot -- npx @coding-solo/godot-mcp
+npm install -g .
+godot-mcp --help
 ```
 
-That's it. Restart Claude Code and your Godot MCP tools are available.
-
-With environment variables:
+开发态也可以直接运行构建产物：
 
 ```bash
-claude mcp add godot -e GODOT_PATH=/path/to/godot -e DEBUG=true -- npx @coding-solo/godot-mcp
-```
-
-<details>
-<summary><strong>Cline</strong></summary>
-
-Add to your Cline MCP settings file (`~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "DEBUG": "true"
-      },
-      "disabled": false,
-      "autoApprove": [
-        "launch_editor",
-        "run_project",
-        "get_debug_output",
-        "stop_project",
-        "get_godot_version",
-        "list_projects",
-        "get_project_info",
-        "create_scene",
-        "add_node",
-        "load_sprite",
-        "export_mesh_library",
-        "save_scene",
-        "get_uid",
-        "update_project_uids"
-      ]
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Cursor</strong></summary>
-
-**Using the Cursor UI:**
-
-1. Go to **Cursor Settings** > **Features** > **MCP**
-2. Click on the **+ Add New MCP Server** button
-3. Fill out the form:
-   - Name: `godot`
-   - Type: `command`
-   - Command: `npx @coding-solo/godot-mcp`
-4. Click "Add"
-5. You may need to press the refresh button in the top right corner of the MCP server card to populate the tool list
-
-**Using Project-Specific Configuration:**
-
-Create a file at `.cursor/mcp.json` in your project directory:
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "DEBUG": "true"
-      }
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Other MCP Clients</strong></summary>
-
-For any MCP-compatible client, use this configuration:
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "GODOT_PATH": "/path/to/godot",
-        "DEBUG": "true"
-      }
-    }
-  }
-}
-```
-
-</details>
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `GODOT_PATH` | Path to the Godot executable (overrides automatic detection) |
-| `DEBUG` | Set to `"true"` to enable detailed server-side debug logging |
-
-<details>
-<summary><strong>Building from Source</strong></summary>
-
-```bash
-git clone https://github.com/Coding-Solo/godot-mcp.git
-cd godot-mcp
 npm install
 npm run build
+node build/cli.js --help
 ```
 
-Then point your MCP client to `build/index.js` instead of using `npx`.
+## 公共 CLI
 
-</details>
+常用项目命令：
 
+```bash
+godot-mcp editor --path /path/to/project
+godot-mcp run --path /path/to/project
+godot-mcp stop --path /path/to/project
+godot-mcp debug --filter "ERROR|WARNING"
+godot-mcp version
+godot-mcp info --path /path/to/project
+godot-mcp list --dir /path/to/projects --recursive
+```
 
-## Architecture
+资源、场景和 UID 操作：
 
-The Godot MCP server uses a bundled GDScript approach for complex operations:
+```bash
+godot-mcp resource read --project . --path res://data/item.tres
+godot-mcp resource edit --project . --path res://data/item.tres --props '[{"path":"damage","value":10}]'
+godot-mcp scene create --project . --path scenes/demo.tscn --root Node2D
+godot-mcp scene add-node --project . --scene scenes/demo.tscn --type Sprite2D --name Icon
+godot-mcp scene load-sprite --project . --scene scenes/demo.tscn --node Icon --texture assets/icon.png
+godot-mcp scene save --project . --scene scenes/demo.tscn --new-path scenes/demo_variant.tscn
+godot-mcp scene export-mesh-library --project . --scene scenes/tiles.tscn --output assets/tiles.res
+godot-mcp uid get --project . --path assets/icon.png
+godot-mcp uid update --project .
+```
 
-1. **Direct Commands**: Simple operations like launching the editor or getting project info use Godot's built-in CLI commands directly.
-2. **Bundled Operations Script**: Complex operations like creating scenes or adding nodes use a single, comprehensive GDScript file (`godot_operations.gd`) that handles all operations.
+所有命令向 stdout 输出 JSON，并通过退出码表达成功或失败。具体参数以对应命令的 `--help` 为准。
 
-The bundled script accepts operation type and parameters as JSON, allowing for flexible and dynamic operation execution without generating temporary files for each operation.
+## Ingame Addon
 
-## Troubleshooting
+CLI 自带项目无关的 Godot addon。安装命令会复制 `addons/godot_mcp_ingame`，并注册 `GodotMCPIngame` autoload：
 
-- **Godot Not Found**: Set the `GODOT_PATH` environment variable to your Godot executable path
-- **Connection Issues**: Ensure the server is running and restart your AI assistant
-- **Invalid Project Path**: Ensure the path points to a directory containing a `project.godot` file
-- **Build Issues**: Make sure all dependencies are installed by running `npm install`
+```bash
+godot-mcp ingame install --path /path/to/project
+```
 
-<details>
-<summary><strong>Cursor-Specific Issues</strong></summary>
+默认内部端点为 `ws://127.0.0.1:9090`，项目可以通过 `godot_mcp/ingame/port` ProjectSetting 修改端口。
 
-- Ensure the MCP server shows up and is enabled in Cursor settings (Settings > MCP)
-- MCP tools can only be run using the Agent chat profile (Cursor Pro or Business subscription)
-- Use "Yolo Mode" to automatically run MCP tool requests
+CLI 通过以下命令访问 addon：
 
-</details>
+```bash
+godot-mcp ingame status
+godot-mcp ingame list
+godot-mcp ingame exec --tool <tool-name> --args '{}'
+godot-mcp actions list
+godot-mcp actions run <action-id> --args '{}'
+```
+
+## 通用 Actions 协议
+
+addon 固定提供两个内部工具：
+
+- `godot_mcp_actions_list`
+- `godot_mcp_actions_run`
+
+使用方只需要实现 adapter，不依赖特定游戏的 singleton 或命令名称：
+
+```gdscript
+class MyActionsAdapter:
+	extends RefCounted
+
+	func list_actions(_context: Dictionary) -> Dictionary:
+		return {
+			"revision": "menu-1",
+			"actions": [{
+				"id": "open_menu",
+				"label": "打开菜单",
+				"category": "menu",
+				"enabled": true,
+			}]
+		}
+
+	func run_action(action_id: String, arguments: Dictionary) -> Variant:
+		return {"ok": true, "action_id": action_id, "arguments": arguments}
+
+var actions_adapter := MyActionsAdapter.new()
+
+func _ready() -> void:
+	GodotMCPIngame.set_action_adapter(actions_adapter)
+```
+
+`list_actions(context)` 必须返回包含 `actions` 数组的对象。每个 action 必须有唯一且非空的 `id` 与 `label`；可选通用字段为 `description`、`category`、`enabled`、`argumentsSchema` 和 `metadata`。`run_action(action_id, arguments)` 可以返回任意可 JSON 序列化的结果。
+
+`actions run` 会依次执行：读取执行前快照、执行 action、轮询更新后的 action envelope，最后返回 `{ execution, actions, revision, changed }`。瞬时轮询失败会按统一策略重试。
+
+完整生命周期示例位于安装后的 `addons/godot_mcp_ingame/examples/action_adapter_example.gd`。
+
+## Web 控制器
+
+```bash
+godot-mcp web --port 8080 --game-port 9090
+```
+
+Web 控制器通过同一个 addon actions 协议提供局域网按钮界面。
+
+## 验证
+
+```bash
+npm test
+npm run test:ingame-addon -- /path/to/godot
+```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT

@@ -2,6 +2,7 @@ import { normalize } from 'path';
 
 import type { GodotReadiness, GodotReadinessLevel } from './types.js';
 import { GodotServer } from './godot-server.js';
+import { ACTIONS_LIST_TOOL, parseActionListResponse } from './action-protocol.js';
 
 type ReadinessOptions = {
   projectPath: string;
@@ -9,30 +10,6 @@ type ReadinessOptions = {
   includeBlockedActions?: boolean;
   editorProcessCount?: number | null;
 };
-
-function normalizeActions(raw: any): any[] {
-  const contentText = raw?.content?.[0]?.text;
-  if (typeof contentText === 'string') {
-    try {
-      return normalizeActions(JSON.parse(contentText));
-    } catch {
-      return [];
-    }
-  }
-  if (Array.isArray(raw)) {
-    return raw;
-  }
-  if (Array.isArray(raw?.actions)) {
-    return raw.actions;
-  }
-  if (Array.isArray(raw?.available_actions)) {
-    return raw.available_actions;
-  }
-  if (Array.isArray(raw?.data)) {
-    return raw.data;
-  }
-  return [];
-}
 
 function buildSummary(level: GodotReadinessLevel, readiness: GodotReadiness): string {
   switch (level) {
@@ -133,10 +110,10 @@ export async function collectReadiness(
   if (bridgeConnected && options.probeActions) {
     try {
       const raw = await server.bridge.sendRequest('tools/call', {
-        name: 'get_available_actions',
-        arguments: { include_blocked: readiness.actions.includeBlocked },
+        name: ACTIONS_LIST_TOOL,
+        arguments: { context: { include_blocked: readiness.actions.includeBlocked } },
       });
-      const actions = normalizeActions(raw);
+      const actions = parseActionListResponse(raw).actions;
       readiness.actions.state = 'ready';
       readiness.actions.actionCount = actions.length;
       readiness.level = 'action_ready';
