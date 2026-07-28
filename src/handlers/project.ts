@@ -101,6 +101,14 @@ export async function handleRunProject(server: GodotServer, args: any, options: 
 
   const pluginInstall = server.ensureEditorPlugin(args.projectPath);
   if (!shouldIgnoreEditorSessionGuards() && server.hasFreshEditorSession(args.projectPath)) {
+    const editorSession = server.getEditorSession(args.projectPath);
+    if (editorSession?.isPlaying) {
+      const stopResponse = await server.stopEditorPlay(args.projectPath);
+      if (!stopResponse.success) {
+        return { success: false, error: stopResponse.error || 'Failed to stop the previous editor play session.' };
+      }
+    }
+
     const response = await server.runProjectViaEditor(args.projectPath, args.scene);
     if (!response.success) {
       return { success: false, error: response.error || 'Editor run command failed.' };

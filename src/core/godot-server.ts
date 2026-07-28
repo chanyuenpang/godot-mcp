@@ -479,7 +479,7 @@ export class GodotServer {
     }
 
     try {
-      process.kill(detachedState.pid);
+      GodotServer.killProcessTree(detachedState.pid);
     } catch {
       // stale pid is safe to ignore here
     }
@@ -493,10 +493,11 @@ export class GodotServer {
     mode: GodotLaunchMode,
     options: GodotLaunchOptions = {},
   ): void {
-    // 杀掉已有进程
-    if (this.activeProcess) {
-      this.logDebug('Killing existing Godot process before starting a new one');
-      this.activeProcess.process.kill();
+    // 只回收游戏运行实例；编辑器进程必须保持存活。
+    if (this.activeProcess?.mode === 'run') {
+      this.logDebug('Killing existing Godot game process before starting a new one');
+      GodotServer.killProcessTree(this.activeProcess.process.pid);
+      this.activeProcess = null;
     }
 
     if (mode === 'run') {
